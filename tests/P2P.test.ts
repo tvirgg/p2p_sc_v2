@@ -1,68 +1,84 @@
-import { Address, Cell, beginCell, toNano } from "@ton/core";
+import { Address, beginCell, toNano } from "ton-core";
 import { compile } from "@ton-community/blueprint";
+import { Blockchain, SandboxContract } from "@ton-community/sandbox";
+import { P2P } from "../wrappers/P2P";
 
 describe("P2P Contract Sandbox", () => {
-    let contract: any;
+    let blockchain: Blockchain;
+    let contract: SandboxContract<P2P>;
 
-    const MODERATOR = Address.parse("0:1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff");
+    let MODERATOR: Address;
     const SELLER = Address.parse("0:1111000011110000111100001111000011110000111100001111000011110000");
-    const BUYER = Address.parse("0:2222000022220000222200002222000022220000222200002222000022220000");
+    const BUYER  = Address.parse("0:2222000022220000222200002222000022220000222200002222000022220000");
 
     beforeEach(async () => {
-        // This is a mock implementation for testing purposes
-        // In a real test, you would use the actual sandbox
-        contract = {
-            sendExternal: jest.fn().mockResolvedValue({}),
-            sendInternal: jest.fn().mockResolvedValue({}),
-            invokeGetMethod: jest.fn().mockImplementation(async (method, params) => {
-                if (method === "get_deal_info" && params[0].value === 0) {
-                    return {
-                        stack: {
-                            readBigNumber: () => toNano("1"),
-                            readNumber: () => 1
-                        }
-                    };
-                }
-                return { stack: { readNumber: () => 0 } };
-            })
-        };
+        // Создаём песочницу
+        blockchain = await Blockchain.create();
+
+        // Кошелёк модератора
+        const moderatorWallet = await blockchain.treasury("moderator");
+        MODERATOR = moderatorWallet.address;
+
+        // Компилим смарт-контракт
+        const code = await compile("P2P");
+
+        // Создаём P2P-экземпляр из конфигурации
+        const p2pContract = P2P.createFromConfig(MODERATOR, code);
+        contract = blockchain.openContract(p2pContract);
+
+        // Деплоим
+        await contract.sendDeploy(moderatorWallet, toNano("0.05"));
+        console.log("🚀 Контракт задеплоен");
     });
 
     it("should create and fund a deal", async () => {
-        // Step 1: External message to create a deal
-        const memo = beginCell().storeStringTail("DEAL:1").endCell();
-        const memoHash = memo.hash();
+        const dealAmount = toNano("1");
+        const memoText = "DEAL:1";
 
-        const payload = beginCell()
-            .storeUint(1, 32) // op_create_deal
-            .storeAddress(MODERATOR) // sender == moderator
-            .storeAddress(SELLER)
-            .storeAddress(BUYER)
-            .storeCoins(toNano("1")) // deal amount
-            .storeRef(memo)
-            .endCell();
+        // Считаем хэш от memoCell (для интереса)
+        const memoCell = beginCell().storeStringTail(memoText).endCell();
+        const memoHash = memoCell.hash().toString("hex");
+        console.log("🔖 Memo Hash:", memoHash);
 
-        await contract.sendExternal({
-            body: payload,
-            from: MODERATOR,
-            value: toNano("0.1")
+        // Получаем кошельки в Sandbox
+        const moderatorWallet = await blockchain.treasury("moderator");
+        const buyerWallet     = await blockchain.treasury("buyer");
+
+        // === Шаг 1: Создание сделки ===
+        try {
+            await contract.sendCreateDeal(
+                moderatorWallet,
+                MODERATOR,
+                SELLER,
+                BUYER,
+                dealAmount,
+                memoText
+            );
+        } catch (e) {
+            console.error("🔥 Ошибка при создании сделки:", e);
+            throw e;
+        }
+        console.log("✅ Сделка создана");
+
+        const dealCounterAfterCreate = await contract.getDealCounter();
+        console.log("📈 Deal counter после создания:", dealCounterAfterCreate);
+
+        // === Шаг 2: Финансирование сделки ===
+        await contract.sendFundDeal(
+            buyerWallet,
+            memoText,
+            toNano("1.05") // чуть больше, чтобы учесть комиссию
+        );
+        console.log("💰 Сделка профинансирована");
+
+        // === Шаг 3: Проверка состояния сделки ===
+        const dealInfo = await contract.getDealInfo(0);
+        console.log("📦 Данные сделки:", {
+            amount: dealInfo.amount.toString(),
+            funded: dealInfo.funded
         });
 
-        // Step 2: Internal message to fund the deal (with memo)
-        const bodyWithMemo = beginCell().storeRef(memo).endCell();
-
-        await contract.sendInternal({
-            from: BUYER,
-            value: toNano("1.03"), // amount + 3% commission
-            body: bodyWithMemo
-        });
-
-        // Step 3: Query deal info
-        const res = await contract.invokeGetMethod("get_deal_info", [{ type: "int", value: 0 }]);
-        const amount = res.stack.readBigNumber().toString();
-        const funded = res.stack.readNumber();
-
-        expect(amount).toBe(toNano("1").toString());
-        expect(funded).toBe(1);
+        expect(dealInfo.amount.toString()).toBe(dealAmount.toString());
+        expect(dealInfo.funded).toBe(1);
     });
 });

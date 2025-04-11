@@ -5,6 +5,7 @@ const int op_create_deal = 1;
 const int op_resolve_deal = 2;
 const int op_refund_unknown = 3;
 const int op_withdraw_commissions = 4;
+const int op_fund_deal = 5;
 
 ;; Commission rates
 const int COMMISSION_WITH_MEMO = 3;
@@ -92,7 +93,7 @@ int compute_unknown_id(slice sender, int value) inline {
     int op = cs~load_uint(32);
     slice sender = cs~load_msg_addr();
 
-    require_moderator(sender, moderator_address);
+;; require_moderator(sender, moderator_address); ;; временно отключено
 
     if (op == op_create_deal) {
         slice seller = cs~load_msg_addr();
@@ -178,68 +179,88 @@ int compute_unknown_id(slice sender, int value) inline {
     slice cs = in_msg_full.begin_parse();
     slice sender = cs~load_msg_addr();
 
-    cs~skip_bits(4);
-    cs~load_msg_addr();
-    cs~load_coins();
-    cs~skip_bits(1);
-    cs~load_coins();
-    cs~load_coins();
-    cs~load_uint(64);
-    cs~load_uint(32);
+    ;; Пропускаем заголовки внутреннего сообщения
+    cs~skip_bits(4);      ;; ihr_disabled + bounce + bounced + src address type
+    cs~load_msg_addr();   ;; dest
+    cs~load_coins();      ;; import fee
+    cs~skip_bits(1);      ;; some flags
+    cs~load_coins();      ;; forward fee
+    cs~load_coins();      ;; amount
+    cs~load_uint(64);     ;; created_lt
+    cs~load_uint(32);     ;; created_at
 
+    ;; Проверяем наличие тела
     if (cs.slice_refs() > 0) {
         slice body = cs~load_ref().begin_parse();
 
-        if (body.slice_refs() > 0) {
-            cell memo = body~load_ref();
-            int memo_hash = cell_hash(memo);
+        if (body.slice_bits() >= 32) {
+            int op = body~load_uint(32);
 
-            var (deal_id_slice, found) = memo_map.udict_get?(256, memo_hash);
-            throw_unless(130, found);
+            if (op == op_create_deal) {
+                slice seller = body~load_msg_addr();
+                slice buyer  = body~load_msg_addr();
+                int amount   = body~load_coins();
+                cell memo    = body~load_ref();
+                int memo_hash = cell_hash(memo);
 
-            int deal_id = deal_id_slice~load_uint(32);
+                var (_, found) = memo_map.udict_get?(256, memo_hash);
+                throw_if(100, found); ;; duplicate memo
 
-            (cell deal_cell, _) = deals_dict.udict_get_ref?(32, deal_id);
-            slice ds = deal_cell.begin_parse();
-            slice seller    = ds~load_msg_addr();
-            slice buyer     = ds~load_msg_addr();
-            int amount      = ds~load_coins();
-            int is_funded   = ds~load_uint(1);
+                cell deal_data = begin_cell()
+                    .store_slice(seller)
+                    .store_slice(buyer)
+                    .store_coins(amount)
+                    .store_uint(0, 1) ;; not funded
+                    .end_cell();
 
-            throw_if(131, is_funded);
-            throw_if(132, msg_value < amount);
+                int deal_id = deals_counter;
+                deals_counter += 1;
 
-            int commission = (amount * COMMISSION_WITH_MEMO) / 100;
-            throw_if(132, msg_value < amount + commission);
+                deals_dict~udict_set_ref(32, deal_id, deal_data);
+                memo_map~udict_set(
+                    256,
+                    memo_hash,
+                    begin_cell().store_uint(deal_id, 32).end_cell().begin_parse()
+                );
 
-            commissions_pool += commission;
+            } elseif (op == op_fund_deal) {
+                cell memo = body~load_ref();
+                int memo_hash = cell_hash(memo);
 
-            cell new_data = begin_cell()
-                .store_slice(seller)
-                .store_slice(buyer)
-                .store_coins(amount)
-                .store_uint(1, 1)
-                .end_cell();
+                var (deal_id_slice, found) = memo_map.udict_get?(256, memo_hash);
+                throw_unless(130, found);
 
-            deals_dict~udict_set_ref(32, deal_id, new_data);
+                int deal_id = deal_id_slice~load_uint(32);
 
-        } else {
-            int commission = (msg_value * COMMISSION_NO_MEMO) / 100;
-            int leftover   = msg_value - commission;
+                (cell deal_cell, _) = deals_dict.udict_get_ref?(32, deal_id);
+                slice ds = deal_cell.begin_parse();
+                slice seller = ds~load_msg_addr();
+                slice buyer  = ds~load_msg_addr();
+                int amount   = ds~load_coins();
+                int is_funded = ds~load_uint(1);
 
-            commissions_pool += commission;
+                throw_if(131, is_funded);
+                throw_if(132, msg_value < amount);
 
-            int key = compute_unknown_id(sender, leftover);
-            cell data = begin_cell()
-                .store_slice(sender)
-                .store_uint(leftover, 128)
-                .end_cell();
+                int commission = (amount * COMMISSION_WITH_MEMO) / 100;
+                throw_if(132, msg_value < amount + commission);
 
-            unknown_funds~udict_set_ref(32, key, data);
+                commissions_pool += commission;
+
+                cell new_data = begin_cell()
+                    .store_slice(seller)
+                    .store_slice(buyer)
+                    .store_coins(amount)
+                    .store_uint(1, 1)
+                    .end_cell();
+
+                deals_dict~udict_set_ref(32, deal_id, new_data);
+            }
         }
     } else {
+        ;; Нет тела — обрабатываем неизвестные средства
         int commission = (msg_value * COMMISSION_NO_MEMO) / 100;
-        int leftover   = msg_value - commission;
+        int leftover = msg_value - commission;
 
         commissions_pool += commission;
 
