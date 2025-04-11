@@ -2,83 +2,86 @@ import { Address, beginCell, toNano } from "ton-core";
 import { compile } from "@ton-community/blueprint";
 import { Blockchain, SandboxContract } from "@ton-community/sandbox";
 import { P2P } from "../wrappers/P2P";
+import '@ton-community/test-utils';
 
-describe("P2P Contract Sandbox", () => {
+// Fireworks-style test
+
+describe("P2P Contract Sandbox - Fireworks style", () => {
     let blockchain: Blockchain;
     let contract: SandboxContract<P2P>;
-
     let MODERATOR: Address;
+
     const SELLER = Address.parse("0:1111000011110000111100001111000011110000111100001111000011110000");
-    const BUYER  = Address.parse("0:2222000022220000222200002222000022220000222200002222000022220000");
+    const BUYER = Address.parse("0:2222000022220000222200002222000022220000222200002222000022220000");
 
     beforeEach(async () => {
-        // Создаём песочницу
         blockchain = await Blockchain.create();
+        blockchain.verbosity = {
+            blockchainLogs: true,
+            vmLogs: "vm_logs_full",
+            debugLogs: true,
+            print: false
+        };
 
-        // Кошелёк модератора
         const moderatorWallet = await blockchain.treasury("moderator");
         MODERATOR = moderatorWallet.address;
 
-        // Компилим смарт-контракт
         const code = await compile("P2P");
-
-        // Создаём P2P-экземпляр из конфигурации
         const p2pContract = P2P.createFromConfig(MODERATOR, code);
         contract = blockchain.openContract(p2pContract);
 
-        // Деплоим
         await contract.sendDeploy(moderatorWallet, toNano("0.05"));
-        console.log("🚀 Контракт задеплоен");
     });
 
     it("should create and fund a deal", async () => {
-        const dealAmount = toNano("1");
-        const memoText = "DEAL:1";
+        const dealAmount = toNano("2");
+        const memoText = `DEAL:${Math.floor(Math.random() * 900000) + 100001}`;
 
-        // Считаем хэш от memoCell (для интереса)
-        const memoCell = beginCell().storeStringTail(memoText).endCell();
-        const memoHash = memoCell.hash().toString("hex");
-        console.log("🔖 Memo Hash:", memoHash);
-
-        // Получаем кошельки в Sandbox
         const moderatorWallet = await blockchain.treasury("moderator");
-        const buyerWallet     = await blockchain.treasury("buyer");
+        const buyerWallet = await blockchain.treasury("buyer");
 
-        // === Шаг 1: Создание сделки ===
-        try {
-            await contract.sendCreateDeal(
-                moderatorWallet,
-                MODERATOR,
-                SELLER,
-                BUYER,
-                dealAmount,
-                memoText
-            );
-        } catch (e) {
-            console.error("🔥 Ошибка при создании сделки:", e);
-            throw e;
-        }
-        console.log("✅ Сделка создана");
-
-        const dealCounterAfterCreate = await contract.getDealCounter();
-        console.log("📈 Deal counter после создания:", dealCounterAfterCreate);
-
-        // === Шаг 2: Финансирование сделки ===
-        await contract.sendFundDeal(
-            buyerWallet,
-            memoText,
-            toNano("1.05") // чуть больше, чтобы учесть комиссию
+        // --- Step 1: Create Deal ---
+        const createResult = await contract.sendCreateDeal(
+            moderatorWallet,
+            MODERATOR,
+            SELLER,
+            BUYER,
+            dealAmount,
+            memoText
         );
-        console.log("💰 Сделка профинансирована");
+        console.log("🧾 SELLER:", SELLER.toString());
+        console.log("🧾 BUYER:", BUYER.toString());
+        console.log("📦 CREATE DEAL TRANSACTIONS:", createResult.transactions);
 
-        // === Шаг 3: Проверка состояния сделки ===
-        const dealInfo = await contract.getDealInfo(0);
-        console.log("📦 Данные сделки:", {
-            amount: dealInfo.amount.toString(),
-            funded: dealInfo.funded
+        expect(createResult.transactions).toHaveTransaction({
+            from: moderatorWallet.address,
+            to: contract.address,
+            success: true,
+            op: 1,
         });
 
-        expect(dealInfo.amount.toString()).toBe(dealAmount.toString());
-        expect(dealInfo.funded).toBe(1);
+        const dealCounter = await contract.getDealCounter();
+        expect(dealCounter).toBe(1);
+
+        // --- Step 2: Fund Deal ---
+        const fundResult = await contract.sendFundDeal(
+            buyerWallet,
+            memoText,
+            toNano("2.1") // slightly more to cover commission
+        );
+
+        console.log("💰 FUND DEAL TRANSACTIONS:", fundResult.transactions);
+
+        expect(fundResult.transactions).toHaveTransaction({
+            from: buyerWallet.address,
+            to: contract.address,
+            success: true,
+            op: 5,
+        });
+
+        // --- Step 3: Check Deal Info ---
+        const info = await contract.getDealInfo(0);
+        expect(info.amount.toString()).toBe(dealAmount.toString());
+        expect(info.funded).toBe(1);
     });
 });

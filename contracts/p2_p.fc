@@ -174,29 +174,48 @@ int compute_unknown_id(slice sender, int value) inline {
 }
 
 () recv_internal(int msg_value, cell in_msg_full) impure {
+    ~dump("internal TEST_WORD_THAT_YOU_WILL_SEE_IN_LOGS");
     var (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool) = load_data();
-
+    
     slice cs = in_msg_full.begin_parse();
-    slice sender = cs~load_msg_addr();
 
-    ;; Пропускаем заголовки внутреннего сообщения
-    cs~skip_bits(4);      ;; ihr_disabled + bounce + bounced + src address type
-    cs~load_msg_addr();   ;; dest
-    cs~load_coins();      ;; import fee
-    cs~skip_bits(1);      ;; some flags
-    cs~load_coins();      ;; forward fee
-    cs~load_coins();      ;; amount
-    cs~load_uint(64);     ;; created_lt
-    cs~load_uint(32);     ;; created_at
+    ;; 1) Снимаем 4 бита флагов (ihr_disabled, bounce, bounced, и т.д.)
+    ;;int flags = cs~load_uint(4);
+
+    ;; 2) Считываем адрес отправителя (sender)
+    int flags = cs~load_uint(4);
+    slice sender = cs~load_msg_addr();
+    
+
+    ;; 3) Считываем адрес назначения (destination).
+    ;;    Можно, конечно, проверить, совпадает ли оно с нашим контрактом, но это не обязательно
+    ;;slice destination = cs~load_msg_addr();
+
+    ;; 4) Читаем value (сколько тонн пришло). Обычно это amount
+    ;;int amount = cs~load_coins();
+
+    ;; 5) Здесь иногда идёт forward_fee, но во многих версиях движка это уже
+    ;;    автоматически списывается, и в самом сообщении forward_fee может не храниться.
+    ;;    Если нужно, можно читать дальше:
+    ;; int fwd_fee = cs~load_coins();
+    ;; И т.д.
+    ;; Для created_lt, created_at тоже можно добавить чтение, если это нужно:
+
+    ;;int created_lt  = cs~load_uint(64);
+    ;;int created_at  = cs~load_uint(32);
+
+    ;; 6) Теперь, если refs > 0, то в ref лежит body
 
     ;; Проверяем наличие тела
     if (cs.slice_refs() > 0) {
         slice body = cs~load_ref().begin_parse();
-
+        ~dump("body parse TEST_WORD_THAT_YOU_WILL_SEE_IN_LOGS");
         if (body.slice_bits() >= 32) {
             int op = body~load_uint(32);
-
+            ~dump("🔢 op = ");
+            ~dump(op);
             if (op == op_create_deal) {
+                ~dump("✅ Создание сделки...");
                 slice seller = body~load_msg_addr();
                 slice buyer  = body~load_msg_addr();
                 int amount   = body~load_coins();

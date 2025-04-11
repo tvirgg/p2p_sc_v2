@@ -1,3 +1,4 @@
+import { SandboxContract, TreasuryContract } from '@ton-community/sandbox';
 import { Address, beginCell, Cell, Contract, contractAddress, ContractProvider, Dictionary, Sender, SendMode, toNano } from 'ton-core';
 
 export class P2P implements Contract {
@@ -36,29 +37,53 @@ export class P2P implements Contract {
 
     async sendCreateDeal(
         provider: ContractProvider,
-        sender: any, // кошелёк модератора
+        sender: SandboxContract<TreasuryContract>, // кошелёк модератора
         moderator: Address,
         seller: Address,
         buyer: Address,
         amount: bigint,
         memo: string
     ) {
+        //const memoInner = beginCell().storeStringTail(memo).endCell();
+        //const memoCell = beginCell().storeRef(memoInner).endCell();
+
         const memoCell = beginCell().storeStringTail(memo).endCell();
     
         const body = beginCell()
             .storeUint(1, 32)         // op_create_deal
-            .storeAddress(moderator)
+            //.storeAddress(moderator)
             .storeAddress(seller)
             .storeAddress(buyer)
             .storeCoins(amount)
             .storeRef(memoCell)
             .endCell();
+
+        const msgCell = beginCell()
+            // здесь пишем какие-то заголовки при надобности
+            .storeAddress(moderator)
+            .storeRef(body) // <- Кладём всё в реф
+            .endCell();
     
         // ВНУТРЕННЕЕ сообщение от модератора
-        await provider.internal(sender, {
-            value: toNano("0.05"), // или сколько нужно
+        //await provider.external(body);
+
+        console.log("🚀 Creating deal with the following payload:");
+        console.log({
+            moderator: moderator.toString(),
+            op: 1,
+            seller: seller.toString(),
+            buyer: buyer.toString(),
+            amount: amount.toString(),
+            memo,
+            memoHash: memoCell.hash().toString('hex'),
+            bodyBits: body.bits.length,
+            bodyRefs: body.refs.length,
+        });
+
+        return provider.internal(sender.getSender(), {
+            value: toNano("0.05"), // ⚠️ Не забудь оплату
             sendMode: SendMode.PAY_GAS_SEPARATELY,
-            body,
+            body: msgCell,
         });
     }
     
@@ -77,7 +102,7 @@ export class P2P implements Contract {
         .storeRef(memoCell)
         .endCell();
 
-        await provider.internal(buyer, {
+        return provider.internal(buyer, {
             value,
             body: fundingBody,
             bounce: true,
@@ -101,7 +126,7 @@ export class P2P implements Contract {
             .endCell();
 
         // For Sandbox testing, we'll use internal message from the sender
-        await provider.internal(sender, {
+        return provider.internal(sender, {
             value: toNano("0.05"),
             body: payload,
             sendMode: SendMode.PAY_GAS_SEPARATELY
@@ -121,7 +146,7 @@ export class P2P implements Contract {
             .endCell();
 
         // For Sandbox testing, we'll use internal message from the sender
-        await provider.internal(sender, {
+        return provider.internal(sender, {
             value: toNano("0.05"),
             body: payload,
             sendMode: SendMode.PAY_GAS_SEPARATELY
@@ -141,7 +166,7 @@ export class P2P implements Contract {
             .endCell();
 
         // For Sandbox testing, we'll use internal message from the sender
-        await provider.internal(sender, {
+        return provider.internal(sender, {
             value: toNano("0.05"),
             body: payload,
             sendMode: SendMode.PAY_GAS_SEPARATELY
