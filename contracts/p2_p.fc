@@ -1,15 +1,15 @@
 #include "imports/stdlib.fc";
 
-;; Operation codes
 const int op_create_deal = 1;
 const int op_resolve_deal = 2;
 const int op_refund_unknown = 3;
 const int op_withdraw_commissions = 4;
 const int op_fund_deal = 5;
 
-;; Commission rates
 const int COMMISSION_WITH_MEMO = 3;
 const int COMMISSION_NO_MEMO = 3;
+
+int equal_slice_bits(slice a, slice b) asm "SDEQ";
 
 () send_transfer(slice dest, int grams) impure inline {
     var msg = begin_cell()
@@ -18,17 +18,7 @@ const int COMMISSION_NO_MEMO = 3;
         .store_coins(grams)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         .end_cell();
-
     send_raw_message(msg, 1);
-}
-
-int compute_unknown_id(slice sender, int value) inline {
-    return cell_hash(
-        begin_cell()
-            .store_slice(sender)
-            .store_uint(value, 64)
-            .end_cell()
-    );
 }
 
 () require_moderator(slice sender, slice moderator_address) impure inline {
@@ -37,282 +27,289 @@ int compute_unknown_id(slice sender, int value) inline {
 
 (int, cell, cell, cell, slice, int) load_data() impure {
     cell data = get_data();
-
-    ;; 📛 Если стейт совсем пустой (null) — безопасно инициализируем
     if (cell_null?(data)) {
         return (0, new_dict(), new_dict(), new_dict(), null(), 0);
     }
-
     slice ds = data.begin_parse();
-
-    ;; 🔒 Если slice пустой — тоже безопасно инициализируем
     if (slice_empty?(ds)) {
         return (0, new_dict(), new_dict(), new_dict(), null(), 0);
     }
-
-    ;; Читаем данные из стейта
     int deals_counter = ds~load_uint(32);
     cell deals_dict = ds~load_dict();
     cell memo_map = ds~load_dict();
     cell unknown_funds = ds~load_dict();
-
     slice moderator_address = null();
-    if (ds.slice_bits() > 0) {
+    
+    ;; Always try to load moderator address if we have data
+    if (~ ds.slice_empty?()) {
         moderator_address = ds~load_msg_addr();
     }
-
+    
     int commissions_pool = 0;
-    if (ds.slice_bits() >= 32) {
+    if (~ ds.slice_empty?()) {
         commissions_pool = ds~load_uint(32);
     }
-
-    ds.end_parse();
-
+    
     return (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool);
 }
 
-
-
-() save_data(int deals_counter, cell deals_dict, cell memo_map, cell unknown_funds, slice moderator_address, int commissions_pool) impure {
-    set_data(
-        begin_cell()
-            .store_uint(deals_counter, 32)
-            .store_dict(deals_dict)
-            .store_dict(memo_map)
-            .store_dict(unknown_funds)
-            .store_slice(moderator_address)
-            .store_uint(commissions_pool, 32)
-        .end_cell()
-    );
+() save_data(int dc, cell dd, cell mm, cell uf, slice ma, int cp) impure {
+    ;; Explicitly create the cell with all data
+    cell data_cell = begin_cell()
+            .store_uint(dc, 32)  ;; Store deal counter
+            .store_dict(dd)      ;; Store deals dictionary
+            .store_dict(mm)      ;; Store memo map
+            .store_dict(uf)      ;; Store unknown funds
+            .store_slice(ma)     ;; Store moderator address
+            .store_uint(cp, 32)  ;; Store commissions pool
+        .end_cell();
+    
+    ;; Set the data cell as the persistent storage
+    set_data(data_cell);
 }
 
 () recv_external(int msg_value, cell in_msg_cell) impure {
-    var (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool) = load_data();
-
+    var (dc, dd, mm, uf, ma, cp) = load_data();
     slice cs = in_msg_cell.begin_parse();
     int op = cs~load_uint(32);
     slice sender = cs~load_msg_addr();
-
-;; require_moderator(sender, moderator_address); ;; временно отключено
-
     if (op == op_create_deal) {
-        slice seller = cs~load_msg_addr();
-        slice buyer  = cs~load_msg_addr();
-        int amount   = cs~load_coins();
-        cell memo    = cs~load_ref();
-        int memo_hash = cell_hash(memo);
-
-        var (_, found) = memo_map.udict_get?(256, memo_hash);
-        throw_if(100, found);
-
-        cell deal_data = begin_cell()
-            .store_slice(seller)
-            .store_slice(buyer)
-            .store_coins(amount)
+        slice s = cs~load_msg_addr();
+        slice b = cs~load_msg_addr();
+        int a = cs~load_coins();
+        cell m = cs~load_ref();
+        int mh = cell_hash(m);
+        var (_, f) = mm.udict_get?(256, mh);
+        throw_if(100, f);
+        cell d = begin_cell()
+            .store_slice(s)
+            .store_slice(b)
+            .store_coins(a)
             .store_uint(0, 1)
             .end_cell();
-
-        int deal_id = deals_counter;
-        deals_counter += 1;
-
-        deals_dict~udict_set_ref(32, deal_id, deal_data);
-
-        memo_map~udict_set(
+        int id = dc;
+        dc = dc + 1;  ;; Changed from dc += 1 to dc = dc + 1
+        dd~udict_set_ref(32, id, d);
+        mm~udict_set(
             256,
-            memo_hash,
-            begin_cell().store_uint(deal_id, 32).end_cell().begin_parse()
+            mh,
+            begin_cell().store_uint(id, 32).end_cell().begin_parse()
         );
-
+        
+        ;; Save the updated data immediately
+        save_data(dc, dd, mm, uf, ma, cp);
+        
+        ;; Return early to avoid saving data again at the end of the function
+        return ();
     } elseif (op == op_resolve_deal) {
-        cell memo = cs~load_ref();
-        int decision = cs~load_uint(1);
-        int memo_hash = cell_hash(memo);
-
-        var (deal_id_slice, found) = memo_map.udict_get?(256, memo_hash);
-        throw_unless(110, found);
-        int deal_id = deal_id_slice~load_uint(32);
-
-        (cell deal_cell, _) = deals_dict.udict_get_ref?(32, deal_id);
-        slice ds = deal_cell.begin_parse();
-        slice seller  = ds~load_msg_addr();
-        slice buyer   = ds~load_msg_addr();
-        int amount    = ds~load_coins();
-        int is_funded = ds~load_uint(1);
-        throw_unless(111, is_funded);
-
-        if (decision == 1) {
-            send_transfer(seller, amount);
+        cell m = cs~load_ref();
+        int x = cs~load_uint(1);
+        int mh = cell_hash(m);
+        var (dslice, f) = mm.udict_get?(256, mh);
+        throw_unless(110, f);
+        int id = dslice~load_uint(32);
+        (cell c, int found) = dd.udict_get_ref?(32, id);
+        throw_unless(140, found);
+        slice d2 = c.begin_parse();
+        slice s = d2~load_msg_addr();
+        slice b = d2~load_msg_addr();
+        int amt = d2~load_coins();
+        int funded = d2~load_uint(1);
+        throw_unless(111, funded);
+        if (x == 1) {
+            send_transfer(s, amt);
         } else {
-            send_transfer(buyer, amount);
+            send_transfer(b, amt);
         }
-
-        deals_dict~udict_delete?(32, deal_id);
-        memo_map~udict_delete?(256, memo_hash);
-
+        dd~udict_delete?(32, id);
+        mm~udict_delete?(256, mh);
+        
+        ;; Save the updated data immediately
+        save_data(dc, dd, mm, uf, ma, cp);
+        
+        ;; Return early to avoid saving data again at the end of the function
+        return ();
     } elseif (op == op_refund_unknown) {
-        int key = cs~load_uint(32);
-
-        (cell data, int found) = unknown_funds.udict_get_ref?(32, key);
-        throw_unless(120, found);
-
-        slice ds = data.begin_parse();
-        slice original_sender = ds~load_msg_addr();
-        int value = ds~load_uint(128);
-
-        send_transfer(original_sender, value);
-        unknown_funds~udict_delete?(32, key);
-
+        int k = cs~load_uint(32);
+        (cell c, int f) = uf.udict_get_ref?(32, k);
+        throw_unless(120, f);
+        slice ds2 = c.begin_parse();
+        slice orig = ds2~load_msg_addr();
+        int val = ds2~load_uint(128);
+        send_transfer(orig, val);
+        uf~udict_delete?(32, k);
+        
+        ;; Save the updated data immediately
+        save_data(dc, dd, mm, uf, ma, cp);
+        
+        ;; Return early to avoid saving data again at the end of the function
+        return ();
     } elseif (op == op_withdraw_commissions) {
-        int amount = cs~load_coins();
-        throw_if(160, amount > commissions_pool);
-
-        commissions_pool -= amount;
-        send_transfer(sender, amount);
+        int amt = cs~load_coins();
+        throw_if(160, amt > cp);
+        cp -= amt;
+        send_transfer(sender, amt);
+        
+        ;; Save the updated data immediately
+        save_data(dc, dd, mm, uf, ma, cp);
+        
+        ;; Return early to avoid saving data again at the end of the function
+        return ();
     }
-
-    save_data(deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool);
+    save_data(dc, dd, mm, uf, ma, cp);
 }
 
 () recv_internal(int msg_value, cell in_msg_full) impure {
-    ~dump("internal TEST_WORD_THAT_YOU_WILL_SEE_IN_LOGS");
-    var (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool) = load_data();
-    
+    accept_message();
+    var (dc, dd, mm, uf, ma, cp) = load_data();
     slice cs = in_msg_full.begin_parse();
 
-    ;; 1) Снимаем 4 бита флагов (ihr_disabled, bounce, bounced, и т.д.)
-    ;;int flags = cs~load_uint(4);
-
-    ;; 2) Считываем адрес отправителя (sender)
-    int flags = cs~load_uint(4);
+    ;; Пропускаем заголовок внутреннего сообщения:
+    cs~load_uint(4);  
     slice sender = cs~load_msg_addr();
-    
+    int forwardValue = cs~load_coins(); 
+    cs~load_uint(1 + 4 + 4 + 64 + 32 + 1 + 1);
 
-    ;; 3) Считываем адрес назначения (destination).
-    ;;    Можно, конечно, проверить, совпадает ли оно с нашим контрактом, но это не обязательно
-    ;;slice destination = cs~load_msg_addr();
-
-    ;; 4) Читаем value (сколько тонн пришло). Обычно это amount
-    ;;int amount = cs~load_coins();
-
-    ;; 5) Здесь иногда идёт forward_fee, но во многих версиях движка это уже
-    ;;    автоматически списывается, и в самом сообщении forward_fee может не храниться.
-    ;;    Если нужно, можно читать дальше:
-    ;; int fwd_fee = cs~load_coins();
-    ;; И т.д.
-    ;; Для created_lt, created_at тоже можно добавить чтение, если это нужно:
-
-    ;;int created_lt  = cs~load_uint(64);
-    ;;int created_at  = cs~load_uint(32);
-
-    ;; 6) Теперь, если refs > 0, то в ref лежит body
-
-    ;; Проверяем наличие тела
-    if (cs.slice_refs() > 0) {
-        slice body = cs~load_ref().begin_parse();
-        ~dump("body parse TEST_WORD_THAT_YOU_WILL_SEE_IN_LOGS");
-        if (body.slice_bits() >= 32) {
-            int op = body~load_uint(32);
-            ~dump("🔢 op = ");
-            ~dump(op);
-            if (op == op_create_deal) {
-                ~dump("✅ Создание сделки...");
-                slice seller = body~load_msg_addr();
-                slice buyer  = body~load_msg_addr();
-                int amount   = body~load_coins();
-                cell memo    = body~load_ref();
-                int memo_hash = cell_hash(memo);
-
-                var (_, found) = memo_map.udict_get?(256, memo_hash);
-                throw_if(100, found); ;; duplicate memo
-
-                cell deal_data = begin_cell()
-                    .store_slice(seller)
-                    .store_slice(buyer)
-                    .store_coins(amount)
-                    .store_uint(0, 1) ;; not funded
-                    .end_cell();
-
-                int deal_id = deals_counter;
-                deals_counter += 1;
-
-                deals_dict~udict_set_ref(32, deal_id, deal_data);
-                memo_map~udict_set(
-                    256,
-                    memo_hash,
-                    begin_cell().store_uint(deal_id, 32).end_cell().begin_parse()
-                );
-
-            } elseif (op == op_fund_deal) {
-                cell memo = body~load_ref();
-                int memo_hash = cell_hash(memo);
-
-                var (deal_id_slice, found) = memo_map.udict_get?(256, memo_hash);
-                throw_unless(130, found);
-
-                int deal_id = deal_id_slice~load_uint(32);
-
-                (cell deal_cell, _) = deals_dict.udict_get_ref?(32, deal_id);
-                slice ds = deal_cell.begin_parse();
-                slice seller = ds~load_msg_addr();
-                slice buyer  = ds~load_msg_addr();
-                int amount   = ds~load_coins();
-                int is_funded = ds~load_uint(1);
-
-                throw_if(131, is_funded);
-                throw_if(132, msg_value < amount);
-
-                int commission = (amount * COMMISSION_WITH_MEMO) / 100;
-                throw_if(132, msg_value < amount + commission);
-
-                commissions_pool += commission;
-
-                cell new_data = begin_cell()
-                    .store_slice(seller)
-                    .store_slice(buyer)
-                    .store_coins(amount)
-                    .store_uint(1, 1)
-                    .end_cell();
-
-                deals_dict~udict_set_ref(32, deal_id, new_data);
-            }
+    if (cs.slice_bits() >= 32) {
+        int op = cs~load_uint(32);
+        
+        if (op == op_create_deal) {
+            ;; Check that sender is the moderator
+            require_moderator(sender, ma);
+            
+            slice s = cs~load_msg_addr();
+            slice b = cs~load_msg_addr();
+            int a = cs~load_coins();
+            cell m = cs~load_ref();
+            int mh = cell_hash(m);
+            var (_, f) = mm.udict_get?(256, mh);
+            throw_if(100, f);
+            
+            ;; Create deal cell with amount and funded status
+            cell d = begin_cell()
+                .store_slice(s)
+                .store_slice(b)
+                .store_coins(a)  ;; Store the amount
+                .store_uint(0, 1)  ;; Not funded yet
+                .end_cell();
+                
+            ;; Increment counter and store deal
+            int id = dc;
+            dc = dc + 1;  ;; Increment the counter
+            
+            ;; Store the deal in the dictionary
+            dd~udict_set_ref(32, id, d);
+            
+            ;; Store the mapping from memo hash to deal ID
+            mm~udict_set(
+                256,
+                mh,
+                begin_cell().store_uint(id, 32).end_cell().begin_parse()
+            );
+            
+            ;; Save the updated data immediately
+            save_data(dc, dd, mm, uf, ma, cp);
+            
+            ;; Return early to avoid saving data again at the end of the function
+            return ();
+        } elseif (op == op_fund_deal) {
+            cell m = cs~load_ref();
+            int mh = cell_hash(m);
+            var (dslice, f) = mm.udict_get?(256, mh);
+            throw_unless(130, f);
+            int id = dslice~load_uint(32);
+            (cell c2, int found) = dd.udict_get_ref?(32, id);
+            throw_unless(140, found);
+            slice d2 = c2.begin_parse();
+            slice s = d2~load_msg_addr();
+            slice b = d2~load_msg_addr();
+            int amt = d2~load_coins();
+            int funded = d2~load_uint(1);
+            throw_if(131, funded);
+            throw_if(132, msg_value < amt);
+            int comm = (amt * COMMISSION_WITH_MEMO) / 100;
+            throw_if(132, msg_value < amt + comm);
+            cp += comm;
+            
+            ;; Create new deal cell with funded=1
+            cell nd = begin_cell()
+                .store_slice(s)
+                .store_slice(b)
+                .store_coins(amt)
+                .store_uint(1, 1)
+                .end_cell();
+                
+            ;; Update the deal in the dictionary
+            dd~udict_set_ref(32, id, nd);
+            
+            ;; Save the updated data immediately
+            save_data(dc, dd, mm, uf, ma, cp);
+            
+            ;; Return early to avoid saving data again at the end of the function
+            return ();
         }
-    } else {
-        ;; Нет тела — обрабатываем неизвестные средства
-        int commission = (msg_value * COMMISSION_NO_MEMO) / 100;
-        int leftover = msg_value - commission;
-
-        commissions_pool += commission;
-
-        int key = compute_unknown_id(sender, leftover);
-        cell data = begin_cell()
-            .store_slice(sender)
-            .store_uint(leftover, 128)
-            .end_cell();
-
-        unknown_funds~udict_set_ref(32, key, data);
     }
-
-    save_data(deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool);
+    save_data(dc, dd, mm, uf, ma, cp);
 }
 
 (int, int) get_deal_info(int deal_id) method_id {
-    var (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool) = load_data();
-    (cell deal_cell, int found) = deals_dict.udict_get_ref?(32, deal_id);
-
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
         return (0, 0);
     }
-
-    slice ds = deal_cell.begin_parse();
-    ds~load_msg_addr();
-    ds~load_msg_addr();
-    int amount    = ds~load_coins();
-    int is_funded = ds~load_uint(1);
-
-    return (amount, is_funded);
+    
+    slice d2 = c.begin_parse();
+    d2~load_msg_addr();  ;; Skip seller address
+    d2~load_msg_addr();  ;; Skip buyer address
+    int amt = d2~load_coins();  ;; Read amount
+    int f = d2~load_uint(1);    ;; Read funded status
+    
+    return (amt, f);
 }
 
 int get_deal_counter() method_id {
-    var (deals_counter, _, _, _, _, _) = load_data();
-    return deals_counter;
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    return dc;
+}
+
+;; Debug function to dump a deal
+(slice, slice, int, int) debug_get_deal(int deal_id) method_id {
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    (cell c, int found) = dd.udict_get_ref?(32, deal_id);
+    if (found == 0) {
+        return (null(), null(), 0, 0);
+    }
+    
+    slice d2 = c.begin_parse();
+    slice seller = d2~load_msg_addr();
+    slice buyer = d2~load_msg_addr();
+    int amt = d2~load_coins();
+    int f = d2~load_uint(1);
+    
+    return (seller, buyer, amt, f);
+}
+
+;; Debug function to get the moderator address
+slice get_moderator() method_id {
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    return ma;
+}
+
+;; Debug function to dump all contract data
+(int, int, slice) debug_get_contract_data() method_id {
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    return (dc, cp, ma);
+}
+
+;; Debug function to check if a deal exists
+int debug_deal_exists(int deal_id) method_id {
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    (_, int found) = dd.udict_get_ref?(32, deal_id);
+    return found;
+}
+
+;; Debug function to get the raw data cell
+cell debug_get_raw_data() method_id {
+    return get_data();
 }
