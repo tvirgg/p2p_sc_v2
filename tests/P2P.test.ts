@@ -47,7 +47,7 @@ describe("P2P Contract Sandbox", () => {
     it("should create a deal", async () => {
         // Тестируем создание сделки
         const dealAmount = toNano("2");
-        const memoText = "someMemo123";
+        const memoText = "1236";
 
         // Считаем хэш от memoCell (для интереса)
         const memoCell = beginCell().storeStringTail(memoText).endCell();
@@ -76,7 +76,14 @@ describe("P2P Contract Sandbox", () => {
             dealAmount,                 // amount
             memoText                    // memo
         );
+        //console.log(createResult.transactions);
 
+        expect(createResult.transactions).toHaveTransaction({
+            from: moderatorWallet.address,
+            to: contract.address,
+            success: true,
+            op: 1,
+        });
         console.log("✅ Сделка создана");
 
         // Получаем данные контракта после создания сделки
