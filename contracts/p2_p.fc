@@ -162,22 +162,21 @@
     () recv_internal(int msg_value, cell in_msg_full) impure {
         accept_message();
         ~strdump("HEHEHEBOYINT");
+        ~dump(in_msg_full);
+        ~strdump("HEHEHEBOYINT2");
+
         var (dc, dd, mm, uf, ma, cp) = load_data();
+        ~strdump("HEHEHEBOYINT3");
         slice cs = in_msg_full.begin_parse();
+        ~strdump("HEHEHEBOYINT4");
 
-        ;; Пропускаем заголовок внутреннего сообщения:
-        cs~load_uint(4);  
-        slice sender = cs~load_msg_addr();
-        int forwardValue = cs~load_coins(); 
-        cs~load_uint(1 + 4 + 4 + 64 + 32 + 1 + 1);
-
+        ;; Мы больше не пропускаем заголовок, потому что это уже тело (body)
+        ;; Сразу читаем op-код
+        ~strdump("DDD");
         if (cs.slice_bits() >= 32) {
             int op = cs~load_uint(32);
-            
+            ~strdump("2");
             if (op == op_create_deal) {
-                ;; Check that sender is the moderator
-                ;; require_moderator(sender, ma);
-                
                 slice s = cs~load_msg_addr();
                 slice b = cs~load_msg_addr();
                 int a = cs~load_coins();
@@ -185,33 +184,26 @@
                 int mh = cell_hash(m);
                 var (_, f) = mm.udict_get?(256, mh);
                 throw_if(100, f);
-                
+                ~strdump("3");
                 ;; Create deal cell with amount and funded status
                 cell d = begin_cell()
                     .store_slice(s)
                     .store_slice(b)
-                    .store_coins(a)  ;; Store the amount
-                    .store_uint(0, 1)  ;; Not funded yet
+                    .store_coins(a)
+                    .store_uint(0, 1)
                     .end_cell();
-                    
-                ;; Increment counter and store deal
+
                 int id = dc;
-                dc = dc + 1;  ;; Increment the counter
-                
-                ;; Store the deal in the dictionary
+                dc = dc + 1;
+                ~strdump("4");
                 dd~udict_set_ref(32, id, d);
-                
-                ;; Store the mapping from memo hash to deal ID
                 mm~udict_set(
                     256,
                     mh,
                     begin_cell().store_uint(id, 32).end_cell().begin_parse()
                 );
-                
-                ;; Save the updated data immediately
+
                 save_data(dc, dd, mm, uf, ma, cp);
-                
-                ;; Return early to avoid saving data again at the end of the function
                 return ();
             } elseif (op == op_fund_deal) {
                 cell m = cs~load_ref();
