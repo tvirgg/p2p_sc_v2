@@ -9,142 +9,127 @@ describe("P2P Contract Sandbox", () => {
     let contract: SandboxContract<P2P>;
     let moderatorWallet: SandboxContract<TreasuryContract>;
 
-    // Просто примеры "продавца" и "покупателя"
-    const SELLER = Address.parse("0:1111000011110000111100001111000011110000111100001111000011110000");
-    const BUYER  = Address.parse("0:2222000022220000222200002222000022220000222200002222000022220000");
+    // Для тестовых целей используем фиксированный hex для покупателя,
+    // а для продавца и для проверки перевода средств создаём кошельки через sandbox.
+    const BUYER_HEX  = "0:2222000022220000222200002222000022220000222200002222000022220000";
 
     beforeEach(async () => {
-        // 1) создаём локальный блокчейн
+        // 1) Создаём локальный блокчейн
         blockchain = await Blockchain.create();
         blockchain.verbosity = {
             blockchainLogs: true,
             vmLogs: "vm_logs_full",
             debugLogs: true,
-            print: false
+            print: false,
         };
 
-        // 2) создаём "модератора" (кошелёк)
+        // 2) Создаём "модератора" (кошелёк)
         moderatorWallet = await blockchain.treasury("moderator");
 
-        // 3) компилим P2P.fc
+        // 3) Компилим исходный код контракта (например, P2P.fc)
         const code = await compile("P2P");
 
-        // 4) создаём экземпляр нашего контракта
+        // 4) Создаём экземпляр контракта через обёртку
         const p2pConfig = P2P.createFromConfig(moderatorWallet.address, code, 0);
 
-        // 5) "Открываем" через sandbox
+        // 5) "Открываем" контракт через sandbox
         contract = blockchain.openContract(p2pConfig);
 
-        // 6) Деплоим
+        // 6) Деплоим контракт
         await contract.sendDeploy(
             moderatorWallet.getSender(),
             toNano("0.05")
         );
         
-        console.log("🚀 Контракт задеплоен");
+        process.stdout.write(`🚀 Контракт задеплоен по адресу: ${contract.address.toString()}\n`);
     });
 
     it("should create a deal", async () => {
-        // Тестируем создание сделки
+        const SELLER = Address.parse("0:1111000011110000111100001111000011110000111100001111000011110000");
+        const BUYER = Address.parse(BUYER_HEX);
         const dealAmount = toNano("2");
         const memoText = "1236";
 
-        // Считаем хэш от memoCell (для интереса)
+        // Вычисляем хэш memoCell (для логирования)
         const memoCell = beginCell().storeStringTail(memoText).endCell();
         const memoHash = memoCell.hash().toString("hex");
-        console.log("🔖 Memo Hash:", memoHash);
+        process.stdout.write(`🔖 Memo Hash: ${memoHash}\n`);
 
-        console.log("🏁 Контракт адрес:", contract.address.toString());
-        console.log("🏁 Модератор адрес:", moderatorWallet.address.toString());
+        process.stdout.write(`🏁 Контракт адрес: ${contract.address.toString()}\n`);
+        process.stdout.write(`🏁 Модератор адрес: ${moderatorWallet.address.toString()}\n`);
 
         // Получаем данные контракта до создания сделки
         const contractDataBefore = await contract.getContractData();
-        console.log("📊 Данные контракта ДО:", contractDataBefore);
+        process.stdout.write(`📊 Данные контракта ДО: ${JSON.stringify(contractDataBefore)}\n`);
         
-        // Проверяем, что модератор правильно инициализирован
+        // Проверяем адрес модератора, записанный в контракте
         const moderatorAddress = await contract.getModeratorAddress();
-        console.log("👮 Модератор в контракте:", moderatorAddress.toString());
-        
-        // Проверяем, что модератор совпадает с ожидаемым
+        process.stdout.write(`👮 Модератор в контракте: ${moderatorAddress.toString()}\n`);
         expect(moderatorAddress.equals(moderatorWallet.address)).toBe(true);
 
-        // Шаг 1: создаём сделку
+        // Создаём сделку
         const createResult = await contract.sendCreateDeal(
             moderatorWallet.getSender(),
-            SELLER,                     // seller
-            BUYER,                      // buyer
-            dealAmount,                 // amount
-            memoText                    // memo
+            SELLER,
+            BUYER,
+            dealAmount,
+            memoText
         );
-        //console.log(createResult.transactions);
-
         expect(createResult.transactions).toHaveTransaction({
             from: moderatorWallet.address,
             to: contract.address,
             success: true,
             op: 1,
         });
-        console.log("✅ Сделка создана");
+        process.stdout.write(`✅ Сделка создана\n`);
 
         // Получаем данные контракта после создания сделки
         const contractDataAfter = await contract.getContractData();
-        console.log("📊 Данные контракта ПОСЛЕ:", contractDataAfter);
+        process.stdout.write(`📊 Данные контракта ПОСЛЕ: ${JSON.stringify(contractDataAfter)}\n`);
 
         // Получаем счётчик сделок
         const dealCounter = await contract.getDealCounter();
-        console.log("📊 dealCounter =", dealCounter);
-
-        // Проверяем существование сделки с ID 0
-        try {
-            const provider = blockchain.provider(contract.address);
-            const dealExists = await contract.debugDealExists(provider, 0);
-            console.log("🔍 Сделка с ID 0 существует:", dealExists);
-
-            // Получаем сырые данные контракта
-            const rawData = await contract.debugGetRawData(provider);
-            console.log("🔄 Сырые данные контракта:", rawData);
-        } catch (error) {
-            console.error("❌ Ошибка при получении отладочной информации:", error);
-        }
+        process.stdout.write(`📊 dealCounter = ${dealCounter}\n`);
+        expect(dealCounter).toBe(1);
 
         // Проверяем getDealInfo(0)
         const infoBefore = await contract.getDealInfo(0);
-        console.log("🧮 Deal Info (index=0) =", infoBefore);
-
-        // Получаем полную информацию о сделке
-        try {
-            const fullDealInfo = await contract.getFullDealInfo(0);
-            console.log("📋 Полная информация о сделке:", fullDealInfo);
-        } catch (error) {
-            console.error("❌ Ошибка при получении полной информации о сделке:", error);
-        }
-
-        // Проверяем, что счетчик сделок увеличился
-        expect(dealCounter).toBe(1);
-
-        // Тут вы можете проверить, что amount = dealAmount, funded=0
+        process.stdout.write(`🧮 Deal Info (index=0) = ${JSON.stringify(infoBefore)}\n`);
         expect(infoBefore.amount.toString()).toBe(dealAmount.toString());
         expect(infoBefore.funded).toBe(0);
+
+        // Получаем полную информацию о сделке (для отладки)
+        try {
+            const fullDealInfo = await contract.getFullDealInfo(0);
+            process.stdout.write(`📋 Полная информация о сделке: ${JSON.stringify(fullDealInfo)}\n`);
+        } catch (error) {
+            process.stdout.write(`❌ Ошибка при получении полной информации о сделке: ${error}\n`);
+        }
     });
 
     it("should create and fund a deal", async () => {
+        const SELLER = Address.parse("0:1111000011110000111100001111000011110000111100001111000011110000");
+        const BUYER = Address.parse(BUYER_HEX);
         const dealAmount = toNano("2");
         const memoText = "DEAL:1";
 
+        // Создаём кошелёк покупателя для финансирования сделки
         const buyerWallet = await blockchain.treasury("buyer");
+
+        // Получаем баланс покупателя ДО финансирования
+        const buyerBalanceBefore = await buyerWallet.getBalance();
+        process.stdout.write(`💳 Баланс покупателя ДО финансирования: ${buyerBalanceBefore.toString()}\n`);
 
         // Получаем данные контракта до создания сделки
         const contractDataBefore = await contract.getContractData();
-        console.log("📊 Данные контракта ДО:", contractDataBefore);
+        process.stdout.write(`📊 Данные контракта ДО: ${JSON.stringify(contractDataBefore)}\n`);
         
-        // Проверяем, что модератор правильно инициализирован
+        // Проверяем, что модератор записан корректно
         const moderatorAddress = await contract.getModeratorAddress();
-        console.log("👮 Модератор в контракте:", moderatorAddress.toString());
-        
-        // Проверяем, что модератор совпадает с ожидаемым
+        process.stdout.write(`👮 Модератор в контракте: ${moderatorAddress.toString()}\n`);
         expect(moderatorAddress.equals(moderatorWallet.address)).toBe(true);
 
-        // Шаг 1: Создание сделки
+        // Шаг 1: создаём сделку
         await contract.sendCreateDeal(
             moderatorWallet.getSender(),
             SELLER,
@@ -152,50 +137,105 @@ describe("P2P Contract Sandbox", () => {
             dealAmount,
             memoText
         );
-        console.log("✅ Сделка создана");
+        process.stdout.write(`✅ Сделка создана\n`);
 
         // Получаем данные контракта после создания сделки
         const contractDataAfterCreate = await contract.getContractData();
-        console.log("📊 Данные контракта ПОСЛЕ создания:", contractDataAfterCreate);
+        process.stdout.write(`📊 Данные контракта ПОСЛЕ создания: ${JSON.stringify(contractDataAfterCreate)}\n`);
 
         const dealCounterAfterCreate = await contract.getDealCounter();
-        console.log("📈 Deal counter после создания:", dealCounterAfterCreate);
+        process.stdout.write(`📈 Deal counter после создания: ${dealCounterAfterCreate}\n`);
 
-        // Получаем информацию о сделке до финансирования
+        // Получаем информацию о сделке ДО финансирования
         const dealInfoBeforeFunding = await contract.getDealInfo(0);
-        console.log("📦 Данные сделки ДО финансирования:", {
+        process.stdout.write(`📦 Данные сделки ДО финансирования: ${JSON.stringify({
             amount: dealInfoBeforeFunding.amount.toString(),
             funded: dealInfoBeforeFunding.funded
-        });
+        })}\n`);
 
-        // Получаем полную информацию о сделке до финансирования
+        // Получаем полную информацию о сделке ДО финансирования
         const fullDealInfoBeforeFunding = await contract.getFullDealInfo(0);
-        console.log("📋 Полная информация о сделке ДО финансирования:", fullDealInfoBeforeFunding);
+        process.stdout.write(`📋 Полная информация о сделке ДО финансирования: ${JSON.stringify(fullDealInfoBeforeFunding)}\n`);
 
-        // Шаг 2: Финансирование сделки
+        // Шаг 2: финансирование сделки
         await contract.sendFundDeal(
             buyerWallet.getSender(),
             memoText,
-            toNano("2.1") // чуть больше, чтобы учесть комиссию
+            toNano("2.1") // чуть больше для учёта комиссии
         );
-        console.log("💰 Сделка профинансирована");
+        process.stdout.write(`💰 Сделка профинансирована\n`);
 
-        // Получаем данные контракта после финансирования сделки
+        // Получаем баланс покупателя ПОСЛЕ финансирования
+        const buyerBalanceAfter = await buyerWallet.getBalance();
+        process.stdout.write(`💳 Баланс покупателя ПОСЛЕ финансирования: ${buyerBalanceAfter.toString()}\n`);
+
+        // Получаем данные контракта ПОСЛЕ финансирования
         const contractDataAfterFunding = await contract.getContractData();
-        console.log("📊 Данные контракта ПОСЛЕ финансирования:", contractDataAfterFunding);
+        process.stdout.write(`📊 Данные контракта ПОСЛЕ финансирования: ${JSON.stringify(contractDataAfterFunding)}\n`);
 
-        // Шаг 3: Проверка состояния сделки
-        const dealInfo = await contract.getDealInfo(0);
-        console.log("📦 Данные сделки ПОСЛЕ финансирования:", {
-            amount: dealInfo.amount.toString(),
-            funded: dealInfo.funded
-        });
+        // Проверяем состояние сделки после финансирования
+        const dealInfoAfterFunding = await contract.getDealInfo(0);
+        process.stdout.write(`📦 Данные сделки ПОСЛЕ финансирования: ${JSON.stringify({
+            amount: dealInfoAfterFunding.amount.toString(),
+            funded: dealInfoAfterFunding.funded
+        })}\n`);
+        expect(dealInfoAfterFunding.amount.toString()).toBe(dealAmount.toString());
+        expect(dealInfoAfterFunding.funded).toBe(1);
 
-        // Получаем полную информацию о сделке после финансирования
+        // Получаем полную информацию о сделке ПОСЛЕ финансирования (для отладки)
         const fullDealInfoAfterFunding = await contract.getFullDealInfo(0);
-        console.log("📋 Полная информация о сделке ПОСЛЕ финансирования:", fullDealInfoAfterFunding);
+        process.stdout.write(`📋 Полная информация о сделке ПОСЛЕ финансирования: ${JSON.stringify(fullDealInfoAfterFunding)}\n`);
+    });
 
-        expect(dealInfo.amount.toString()).toBe(dealAmount.toString());
-        expect(dealInfo.funded).toBe(1);
+    it("should resolve deal in favor of seller", async () => {
+        // Для данного теста создаём кошельки для продавца и покупателя,
+        // чтобы можно было проверить перевод средств продавцу.
+        const sellerWallet = await blockchain.treasury("seller");
+        const buyerWallet = await blockchain.treasury("buyer");
+        const dealAmount = toNano("2");
+        const memoText = "deal-to-seller";
+
+        // Шаг 1: создаём сделку (в данном случае адрес продавца берём из кошелька)
+        await contract.sendCreateDeal(
+            moderatorWallet.getSender(),
+            sellerWallet.address,
+            Address.parse(BUYER_HEX),
+            dealAmount,
+            memoText
+        );
+        process.stdout.write(`✅ Сделка создана для теста разрешения\n`);
+
+        // Шаг 2: финансирование сделки
+        await contract.sendFundDeal(
+            buyerWallet.getSender(),
+            memoText,
+            toNano("2.1")
+        );
+        process.stdout.write(`💰 Сделка профинансирована для теста разрешения\n`);
+
+        // Получаем баланс продавца до разрешения сделки
+        const sellerBalanceBefore = await sellerWallet.getBalance();
+        process.stdout.write(`Seller balance BEFORE resolution: ${sellerBalanceBefore.toString()}\n`);
+
+        // Шаг 3: разрешение сделки в пользу продавца (approvePayment = true)
+        const resolveResult = await contract.sendResolveDeal(
+            moderatorWallet.getSender(),
+            memoText,
+            true  // разрешаем платеж в пользу продавца
+        );
+        expect(resolveResult.transactions).toHaveTransaction({
+            from: moderatorWallet.address,
+            to: contract.address,
+            success: true,
+            op: 2,
+        });
+        process.stdout.write(`✅ Сделка разрешена в пользу продавца\n`);
+
+        // Получаем баланс продавца после разрешения сделки
+        const sellerBalanceAfter = await sellerWallet.getBalance();
+        process.stdout.write(`Seller balance AFTER resolution: ${sellerBalanceAfter.toString()}\n`);
+
+        // Проверяем, что продавец получил как минимум сумму сделки
+        expect(sellerBalanceAfter - sellerBalanceBefore).toBeGreaterThanOrEqual(dealAmount);
     });
 });

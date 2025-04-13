@@ -13,7 +13,7 @@ import {
 
 /**
  * Класс-обёртка P2P,
- * в которой методы для вызова смарт-контракта TON (внутренними сообщениями).
+ * в котором методы для вызова смарт-контракта TON (внутренними сообщениями).
  */
 export class P2P implements Contract {
     constructor(
@@ -23,7 +23,6 @@ export class P2P implements Contract {
 
     /**
      * Создаём контракт из готового адреса.
-     * (Вдруг вы захотите вручную указать address)
      */
     static createFromAddress(address: Address): P2P {
         return new P2P(address);
@@ -31,7 +30,7 @@ export class P2P implements Contract {
 
     /**
      * Создаём контракт из конфига (moderator + code).
-     * Генерируем data, вычисляем address, передаём в конструктор.
+     * Генерируем data, вычисляем адрес, передаём в конструктор.
      */
     static createFromConfig(
         moderator: Address,
@@ -54,7 +53,7 @@ export class P2P implements Contract {
     }
 
     /**
-     * Метод для деплоя (любой контракт обычно требует "отправить пустое сообщение" на контракт)
+     * Метод для деплоя (отправляем пустое сообщение).
      */
     async sendDeploy(
         provider: ContractProvider,
@@ -70,8 +69,6 @@ export class P2P implements Contract {
 
     /**
      * Создание сделки (op = 1).
-     * Всё кладём во вложенный референс, т.к. в recv_internal
-     * код ищет `op` там.
      */
     async sendCreateDeal(
         provider: ContractProvider,
@@ -83,10 +80,9 @@ export class P2P implements Contract {
     ) {
         const memoCell = beginCell().storeStringTail(memo).endCell();
 
-        // Прямое тело сообщения без вложенных референсов
         const msgBody = beginCell()
             .storeUint(1, 32) // op_create_deal
-            .storeUint(0, 64) // query_id (0 for simplicity)
+            .storeUint(0, 64) // query_id (0 для простоты)
             .storeAddress(seller)
             .storeAddress(buyer)
             .storeCoins(amount)
@@ -101,7 +97,7 @@ export class P2P implements Contract {
     }
 
     /**
-     * Финансирование сделки (op=5).
+     * Финансирование сделки (op = 5).
      */
     async sendFundDeal(
         provider: ContractProvider,
@@ -111,10 +107,9 @@ export class P2P implements Contract {
     ) {
         const memoCell = beginCell().storeStringTail(memo).endCell();
 
-        // Прямое тело сообщения без вложенных референсов
         const msgBody = beginCell()
             .storeUint(5, 32) // op_fund_deal
-            .storeUint(0, 64) // query_id (0 for simplicity)
+            .storeUint(0, 64) // query_id (0 для простоты)
             .storeRef(memoCell)
             .endCell();
 
@@ -127,7 +122,7 @@ export class P2P implements Contract {
     }
 
     /**
-     * Разрешение сделки (op=2).
+     * Разрешение сделки (op = 2).
      */
     async sendResolveDeal(
         provider: ContractProvider,
@@ -137,10 +132,9 @@ export class P2P implements Contract {
     ) {
         const memoCell = beginCell().storeStringTail(memo).endCell();
 
-        // Прямое тело сообщения без вложенных референсов
         const msgBody = beginCell()
             .storeUint(2, 32) // op_resolve_deal
-            .storeUint(0, 64) // query_id (0 for simplicity)
+            .storeUint(0, 64) // query_id (0 для простоты)
             .storeRef(memoCell)
             .storeUint(approvePayment ? 1 : 0, 1)
             .endCell();
@@ -153,17 +147,16 @@ export class P2P implements Contract {
     }
 
     /**
-     * Возврат неизвестных средств (op=3).
+     * Возврат неизвестных средств (op = 3).
      */
     async sendRefundUnknown(
         provider: ContractProvider,
         via: Sender,
         key: number
     ) {
-        // Прямое тело сообщения без вложенных референсов
         const msgBody = beginCell()
             .storeUint(3, 32) // op_refund_unknown
-            .storeUint(0, 64) // query_id (0 for simplicity)
+            .storeUint(0, 64) // query_id (0 для простоты)
             .storeUint(key, 32)
             .endCell();
 
@@ -175,17 +168,16 @@ export class P2P implements Contract {
     }
 
     /**
-     * Вывод комиссий (op=4).
+     * Вывод комиссий (op = 4).
      */
     async sendWithdrawCommissions(
         provider: ContractProvider,
         via: Sender,
         amount: bigint
     ) {
-        // Прямое тело сообщения без вложенных референсов
         const msgBody = beginCell()
             .storeUint(4, 32) // op_withdraw_commissions
-            .storeUint(0, 64) // query_id (0 for simplicity)
+            .storeUint(0, 64) // query_id (0 для простоты)
             .storeCoins(amount)
             .endCell();
 
@@ -197,7 +189,7 @@ export class P2P implements Contract {
     }
 
     /**
-     * Геттер: возвращает (amount, funded).
+     * Геттер: получить (amount, funded).
      */
     async getDealInfo(provider: ContractProvider, dealId: number) {
         const res = await provider.get('get_deal_info', [
@@ -260,7 +252,7 @@ export class P2P implements Contract {
         const res = await provider.get('debug_deal_exists', [
             { type: 'int', value: BigInt(dealId) },
         ]);
-        return res.stack.readNumber() === -1; // -1 means true in FunC
+        return res.stack.readNumber() === -1; // -1 означает true в FunC
     }
 
     /**
