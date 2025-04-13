@@ -1,5 +1,5 @@
 import { Address, beginCell, toNano, Cell, Slice } from "@ton/core";
-import { SmartContract, internal, stackInt, TvmRunnerAsynchronous } from "ton-contract-executor";
+import { SmartContract, internal, stackInt, TvmRunnerAsynchronous, externalIn } from "ton-contract-executor";
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -329,5 +329,76 @@ describe("P2P Contract Executor", () => {
         expect(fullDealInfoAfterFunding.buyer.equals(BUYER)).toBe(true);
         expect(fullDealInfoAfterFunding.amount.toString()).toBe(dealAmount.toString());
         expect(fullDealInfoAfterFunding.funded).toBe(1);
+    });
+    function getBalance(contract: SmartContract, address: Address): bigint {
+        try {
+            // Access the executor directly from the contract instance
+            const executor = (contract as any).executor;
+            
+            if (!executor) {
+                console.error("Executor not found on contract instance");
+                return 0n;
+            }
+            
+            // Debug logging
+            console.log("Executor type:", typeof executor);
+            console.log("Executor methods:", Object.keys(executor));
+            
+            // Try to get account
+            const account = executor.getAccount?.(address);
+            
+            if (!account) {
+                console.error("Account not found for address:", address.toString());
+                return 0n;
+            }
+            
+            console.log("Account properties:", Object.keys(account));
+            console.log("Account balance:", account.balance?.toString() || "undefined");
+            
+            return account.balance ?? 0n;
+        } catch (error) {
+            console.error("Error getting balance:", error);
+            return 0n;
+        }
+    }
+    test("should resolve deal in favor of seller", async () => {
+        const contract = await createContract();
+        const dealAmount = toNano("2");
+        const memoText = "deal-to-seller";
+    
+        await createDeal(contract, SELLER, BUYER, dealAmount, memoText);
+        await fundDeal(contract, memoText, toNano("2.1"));
+    
+        const sellerBefore = getBalance(contract, SELLER);
+        process.stdout.write(`Seller balance before: ${sellerBefore.toString()}\n`);
+        const memoCell = beginCell().storeStringTail(memoText).endCell();
+        const externalBody = beginCell()
+            .storeUint(2, 32) // op_resolve_deal
+            .storeAddress(MODERATOR)
+            .storeRef(memoCell)
+            .storeUint(1, 1) // in favor of seller
+            .endCell();
+    
+        const msg = externalIn({
+            dest: CONTRACT_ADDRESS,
+            body: externalBody
+        });
+        const result = await contract.sendExternalMessage(msg);
+        if (result.debugLogs && result.debugLogs.length > 0) {
+            console.log(`\n===== DEBUG LOGS: external =====`);
+            for (const log of result.debugLogs) {
+                process.stdout.write(`${log}\n`);
+            }
+            console.log(`===== END DEBUG LOGS =====`);
+        }
+        expect(result.exit_code).toBe(0);
+    
+        const sellerAfter = getBalance(contract, SELLER);
+        const received = sellerAfter - sellerBefore;
+    
+        
+        process.stdout.write(`Seller balance after: ${sellerAfter.toString()}\n`);
+        process.stdout.write(`Amount received: ${received.toString()}\n`);
+        expect(received >= dealAmount).toBe(true);
     });
 });
