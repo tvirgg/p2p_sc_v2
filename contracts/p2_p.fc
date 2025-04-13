@@ -179,7 +179,8 @@
             int op = cs~load_uint(32);
             ~strdump("2");
             if (op == op_create_deal) {
-                slice s = cs~load_msg_addr();
+                int query_id = cs~load_uint(64);      ;; ← ДОБАВЬ ЭТО
+                slice s = cs~load_msg_addr();         ;; ← теперь адреса читаются правильно
                 slice b = cs~load_msg_addr();
                 int a = cs~load_coins();
                 cell m = cs~load_ref();
@@ -187,6 +188,12 @@
                 var (_, f) = mm.udict_get?(256, mh);
                 throw_if(100, f);
                 ~strdump("3");
+                ~strdump("S:");
+                ~dump(s);
+                ~strdump("B:");
+                ~dump(b);
+                ~strdump("A:");
+                ~dump(a);
                 ;; Create deal cell with amount and funded status
                 cell d = begin_cell()
                     .store_slice(s)
@@ -194,7 +201,10 @@
                     .store_coins(a)
                     .store_uint(0, 1)
                     .end_cell();
-
+                ~strdump("CELL=");
+                ~dump(d);
+                slice dudud = d.begin_parse();
+                ~dump(dudud);
                 int id = dc;
                 dc = dc + 1;
                 ~strdump("4");
@@ -208,39 +218,89 @@
                 save_data(dc, dd, mm, uf, ma, cp);
                 return ();
             } elseif (op == op_fund_deal) {
+                ~strdump(">>> FUND_DEAL START");
+
+                ;; Считываем query_id
+                int query_id = cs~load_uint(64);
+                ~strdump("QUERY_ID:");
+                ~dump(query_id);
+
+                ;; Считываем ссылку на memo
                 cell m = cs~load_ref();
+                ~strdump("MEMO CELL:");
+                ~dump(m);
+
+                ;; Вычисляем хеш от memo
                 int mh = cell_hash(m);
+                ~strdump("MEMO HASH:");
+                ~dump(mh);
+
+                ;; Проверяем наличие в memo map
                 var (dslice, f) = mm.udict_get?(256, mh);
+                ~strdump("MEMO MAP FOUND?");
+                ~dump(f);
                 throw_unless(130, f);
+
+                ;; Читаем id сделки из dslice
+                ~strdump("DSLICE (ID cell):");
+                ~dump(dslice);
                 int id = dslice~load_uint(32);
+                ~strdump("DEAL ID:");
+                ~dump(id);
+
+                ;; Проверяем наличие сделки по id
                 (cell c2, int found) = dd.udict_get_ref?(32, id);
+                ~strdump("DEAL FOUND?");
+                ~dump(found);
                 throw_unless(140, found);
+
+                ;; Распарсим сделку
                 slice d2 = c2.begin_parse();
                 slice s = d2~load_msg_addr();
                 slice b = d2~load_msg_addr();
                 int amt = d2~load_coins();
                 int funded = d2~load_uint(1);
+
+                ;; Лог адресов и суммы
+                ~strdump("SELLER:");
+                ~dump(s);
+                ~strdump("BUYER:");
+                ~dump(b);
+                ~strdump("AMOUNT:");
+                ~dump(amt);
+                ~strdump("FUNDED?");
+                ~dump(funded);
+                ~strdump("msg_value?");    
+                ~dump(msg_value);
+                ;;slice fs = msg_value.begin_parse();
+
+                ;;~strdump("FAKE msg_value as SLICE:");
+                ;;~dump(fs);
+                ;; Проверки
                 throw_if(131, funded);
                 throw_if(132, msg_value < amt);
                 int comm = (amt * COMMISSION_WITH_MEMO) / 100;
                 throw_if(132, msg_value < amt + comm);
+
                 cp += comm;
-                
-                ;; Create new deal cell with funded=1
+
+                ;; Создаём обновлённую сделку
                 cell nd = begin_cell()
                     .store_slice(s)
                     .store_slice(b)
                     .store_coins(amt)
                     .store_uint(1, 1)
                     .end_cell();
-                    
-                ;; Update the deal in the dictionary
+
+                ~strdump("UPDATED DEAL CELL:");
+                ~dump(nd);
+
+                ;; Обновляем в словаре
                 dd~udict_set_ref(32, id, nd);
-                
-                ;; Save the updated data immediately
+
+                ;; Сохраняем
                 save_data(dc, dd, mm, uf, ma, cp);
-                
-                ;; Return early to avoid saving data again at the end of the function
+                ~strdump("<<< FUND_DEAL COMPLETE");
                 return ();
             }
         }
@@ -251,8 +311,10 @@
         var (dc, dd, mm, uf, ma, cp) = load_data();
         (cell c, int found) = dd.udict_get_ref?(32, deal_id);
         if (found == 0) {
+            ~strdump("NOT FOUND");
             return (0, 0);
         }
+        ~strdump("FOUND!");
         
         slice d2 = c.begin_parse();
         d2~load_msg_addr();  ;; Skip seller address

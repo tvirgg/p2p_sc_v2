@@ -1,7 +1,8 @@
-import { Address, beginCell, toNano, Cell } from "@ton/core";
+import { Address, beginCell, toNano, Cell, Slice } from "@ton/core";
 import { SmartContract, internal, stackInt, TvmRunnerAsynchronous } from "ton-contract-executor";
 import * as fs from 'fs';
 import * as path from 'path';
+
 
 // Global variables to share across tests
 let globalCode: Cell | null = null;
@@ -114,24 +115,33 @@ describe("P2P Contract Executor", () => {
         value: bigint
     ) {
         const memoCell = beginCell().storeStringTail(memo).endCell();
-
+    
         const msgBody = beginCell()
-            .storeUint(5, 32) // op_fund_deal
-            .storeUint(0, 64) // query_id
-            .storeRef(memoCell)
+            .storeUint(5, 32)     // op_fund_deal
+            .storeUint(0, 64)     // query_id — обязательно, чтобы не съехало
+            .storeRef(memoCell)   // memo как ссылка
             .endCell();
-
-        // Create internal message using the utility function
+    
         const msg = internal({
             src: BUYER,
             dest: CONTRACT_ADDRESS,
             value: value,
             bounce: true,
-            body: msgBody as any
+            body: msgBody
         });
-
-        // Return the result without attempting to access potentially problematic properties
-        return await contract.sendInternalMessage(msg);
+    
+        const result = await contract.sendInternalMessage(msg);
+    
+        // Логируй, если нужно
+        if (result.debugLogs && result.debugLogs.length > 0) {
+            console.log(`\n===== DEBUG LOGS: fundDeal =====`);
+            for (const log of result.debugLogs) {
+                process.stdout.write(`${log}\n`);
+            }
+            console.log(`===== END DEBUG LOGS =====`);
+        }
+    
+        return result;
     }
 
     // Helper function to get deal info
@@ -144,6 +154,16 @@ describe("P2P Contract Executor", () => {
             throw new Error(`Failed to get deal info: ${result.exit_code}`);
         }
         
+        if (result.debugLogs && result.debugLogs.length > 0) {
+            console.log(`\n===== DEBUG LOGS: get_deal_info(${dealId}) =====`);
+            for (const log of result.debugLogs) {
+                console.log(log);
+            }
+            console.log(`===== END DEBUG LOGS =====\n`);
+        } else {
+            console.log(`\n===== NO DEBUG LOGS FOUND: get_deal_info(${dealId}) =====\n`);
+        }
+
         const amount = BigInt(result.result[0] as any);
         const funded = Number(result.result[1] as any);
         
@@ -171,10 +191,18 @@ describe("P2P Contract Executor", () => {
             throw new Error(`Failed to get full deal info: ${result.exit_code}`);
         }
         
-        // Note: In a real implementation, we would need to properly convert the result to Address objects
-        // For simplicity, we'll just use the raw values for testing
-        const seller = result.result[0] as unknown as Address;
-        const buyer = result.result[1] as unknown as Address;
+        // Convert slices to proper Address objects
+        const sellerSlice = result.result[0] as unknown as Slice;
+        const buyerSlice = result.result[1] as unknown as Slice;
+        
+        // Clone the slice to avoid modifying the original
+        const sellerSliceClone = sellerSlice.clone();
+        const buyerSliceClone = buyerSlice.clone();
+        
+        // Parse addresses from slices
+        const seller = sellerSliceClone.loadAddress();
+        const buyer = buyerSliceClone.loadAddress();
+        
         const amount = BigInt(result.result[2] as unknown as any);
         const funded = Number(result.result[3] as unknown as any);
         
@@ -232,7 +260,10 @@ describe("P2P Contract Executor", () => {
         console.log("deal count: "+dealCounter)
         // Get deal info
         const dealInfo = await getDealInfo(testContract, 0);
-        
+        console.log("deal info:", {
+            amount: dealInfo.amount.toString(),
+            funded: dealInfo.funded
+        });
         // Verify deal was created correctly
         expect(dealCounter).toBe(1);
         expect(dealInfo.amount.toString()).toBe(dealAmount.toString());
@@ -242,9 +273,61 @@ describe("P2P Contract Executor", () => {
         const fullDealInfo = await getFullDealInfo(testContract, 0);
         
         // Verify full deal info
-        expect(fullDealInfo.seller.equals(SELLER)).toBe(true);
-        expect(fullDealInfo.buyer.equals(BUYER)).toBe(true);
+        expect(fullDealInfo.seller.toString()).toBe(SELLER.toString());
+        expect(fullDealInfo.buyer.toString()).toBe(BUYER.toString());
         expect(fullDealInfo.amount.toString()).toBe(dealAmount.toString());
         expect(fullDealInfo.funded).toBe(0);
+    });
+    test("should create and fund a deal", async () => {
+        // Create a new contract instance for this test
+        const testContract = await createContract();
+        
+        const dealAmount = toNano("2");
+        const memoText = "DEAL:1";
+
+        // Create a deal
+        const createResult = await createDeal(
+            testContract,
+            SELLER,
+            BUYER,
+            dealAmount,
+            memoText
+        );
+        
+        expect(createResult.exit_code).toBe(0);
+        
+        // Get deal counter after creation
+        const dealCounterAfterCreate = await getDealCounter(testContract);
+        expect(dealCounterAfterCreate).toBe(1);
+        
+        // Get deal info before funding
+        const dealInfoBeforeFunding = await getDealInfo(testContract, 0);
+        expect(dealInfoBeforeFunding.amount.toString()).toBe(dealAmount.toString());
+        expect(dealInfoBeforeFunding.funded).toBe(0);
+        
+        // Fund the deal
+        const fundResult = await fundDeal(
+            testContract,
+            memoText,
+            toNano("2.1") // slightly more to cover commission
+        );
+        
+        expect(fundResult.exit_code).toBe(0);
+        
+        // Get deal info after funding
+        const dealInfoAfterFunding = await getDealInfo(testContract, 0);
+        
+        // Verify deal was funded correctly
+        expect(dealInfoAfterFunding.amount.toString()).toBe(dealAmount.toString());
+        expect(dealInfoAfterFunding.funded).toBe(1);
+        
+        // Get full deal info after funding
+        const fullDealInfoAfterFunding = await getFullDealInfo(testContract, 0);
+        
+        // Verify full deal info after funding
+        expect(fullDealInfoAfterFunding.seller.equals(SELLER)).toBe(true);
+        expect(fullDealInfoAfterFunding.buyer.equals(BUYER)).toBe(true);
+        expect(fullDealInfoAfterFunding.amount.toString()).toBe(dealAmount.toString());
+        expect(fullDealInfoAfterFunding.funded).toBe(1);
     });
 });
