@@ -1,9 +1,12 @@
 import { Address, beginCell, toNano, Cell } from "@ton/core";
-import { compile } from "@ton-community/blueprint";
 import { SmartContract, internal, stackInt, TvmRunnerAsynchronous } from "ton-contract-executor";
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Global variables to share across tests
+let globalCode: Cell | null = null;
 
 describe("P2P Contract Executor", () => {
-    let code: Cell;
     let data: Cell;
     
     // Addresses for testing
@@ -29,8 +32,17 @@ describe("P2P Contract Executor", () => {
         console.log("Creating contract instance with code and data");
         
         try {
-            // Create contract instance
-            return await SmartContract.fromCell(code as unknown as any, data as unknown as any);
+            if (!globalCode) {
+                throw new Error("Code cell is undefined. Make sure the contract was loaded correctly.");
+            }
+            
+            console.log("Code cell is defined:", globalCode !== undefined);
+            console.log("Code cell type:", typeof globalCode);
+            
+            // Create contract instance with debug enabled
+            return await SmartContract.fromCell(globalCode, data, {
+                debug: true // Enable debug mode
+            });
         } catch (error) {
             console.error("Error creating contract:", error);
             throw error;
@@ -62,10 +74,12 @@ describe("P2P Contract Executor", () => {
             dest: CONTRACT_ADDRESS,
             value: toNano("0.05"),
             bounce: true,
-            body: msgBody as unknown as any
+            body: msgBody as any
         });
 
-        return await contract.sendInternalMessage(msg);
+        const result = await contract.sendInternalMessage(msg);
+        console.log("Create deal logs:", result.logs);
+        return result;
     }
 
     // Helper function to fund a deal
@@ -88,10 +102,12 @@ describe("P2P Contract Executor", () => {
             dest: CONTRACT_ADDRESS,
             value: value,
             bounce: true,
-            body: msgBody as unknown as any
+            body: msgBody as any
         });
 
-        return await contract.sendInternalMessage(msg);
+        const result = await contract.sendInternalMessage(msg);
+        console.log("Fund deal logs:", result.logs);
+        return result;
     }
 
     // Helper function to get deal info
@@ -99,13 +115,14 @@ describe("P2P Contract Executor", () => {
         const result = await contract.invokeGetMethod("get_deal_info", [
             stackInt(dealId)
         ]);
+        console.log("Get deal info logs:", result.logs);
         
         if (result.type !== "success") {
             throw new Error(`Failed to get deal info: ${result.exit_code}`);
         }
         
-        const amount = BigInt(result.result[0] as unknown as any);
-        const funded = Number(result.result[1] as unknown as any);
+        const amount = BigInt(result.result[0] as any);
+        const funded = Number(result.result[1] as any);
         
         return { amount, funded };
     }
@@ -113,6 +130,7 @@ describe("P2P Contract Executor", () => {
     // Helper function to get deal counter
     async function getDealCounter(contract: SmartContract) {
         const result = await contract.invokeGetMethod("get_deal_counter", []);
+        console.log("Get deal counter logs:", result.logs);
         
         if (result.type !== "success") {
             throw new Error(`Failed to get deal counter: ${result.exit_code}`);
@@ -143,12 +161,22 @@ describe("P2P Contract Executor", () => {
 
     beforeAll(async () => {
         try {
-            // Compile the contract once for all tests
-            const compiledCode = await compile("P2P");
-            code = compiledCode as unknown as Cell;
-            console.log("🚀 Contract compiled");
+            // Load the compiled contract from the JSON file
+            const compiledPath = path.resolve(__dirname, '../build/P2P.compiled.json');
+            console.log("Loading compiled contract from:", compiledPath);
+            
+            const compiledJson = JSON.parse(fs.readFileSync(compiledPath, 'utf8'));
+            console.log("Compiled JSON loaded, hex length:", compiledJson.hex.length);
+            
+            // Convert hex to Cell
+            const cells = Cell.fromBoc(Buffer.from(compiledJson.hex, 'hex'));
+            console.log("Cells created from BOC:", cells.length);
+            
+            globalCode = cells[0];
+            console.log("Code cell assigned:", globalCode !== undefined);
+            console.log("🚀 Contract loaded from compiled file");
         } catch (error) {
-            console.error("Error compiling contract:", error);
+            console.error("Error loading compiled contract:", error);
             throw error;
         }
     });
@@ -158,8 +186,8 @@ describe("P2P Contract Executor", () => {
         await TvmRunnerAsynchronous.getShared().cleanup();
     });
 
-    // Run tests in parallel
-    test.concurrent("should create a deal", async () => {
+    // Run tests sequentially
+    test("should create a deal", async () => {
         // Create a new contract instance for this test
         const testContract = await createContract();
         
@@ -198,7 +226,7 @@ describe("P2P Contract Executor", () => {
         expect(fullDealInfo.funded).toBe(0);
     });
 
-    test.concurrent("should create and fund a deal", async () => {
+    test("should create and fund a deal", async () => {
         // Create a new contract instance for this test
         const testContract = await createContract();
         
@@ -251,7 +279,7 @@ describe("P2P Contract Executor", () => {
         expect(fullDealInfoAfterFunding.funded).toBe(1);
     });
 
-    test.concurrent("should handle multiple deals in parallel", async () => {
+    test("should handle multiple deals in parallel", async () => {
         // Create a new contract instance for this test
         const testContract = await createContract();
         
