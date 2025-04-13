@@ -159,7 +159,7 @@
         save_data(dc, dd, mm, uf, ma, cp);
     }
 
-    () recv_internal(int msg_value, cell in_msg_full) impure {
+    () recv_internal(int msg_value, slice in_msg_full) impure {
         accept_message();
         ~strdump("HEHEHEBOYINT");
         ~dump(in_msg_full);
@@ -167,7 +167,9 @@
 
         var (dc, dd, mm, uf, ma, cp) = load_data();
         ~strdump("HEHEHEBOYINT3");
-        slice cs = in_msg_full.begin_parse();
+
+        ;; Теперь in_msg_full уже slice, не нужно вызывать .begin_parse()
+        slice cs = in_msg_full;
         ~strdump("HEHEHEBOYINT4");
 
         ;; Мы больше не пропускаем заголовок, потому что это уже тело (body)

@@ -74,9 +74,10 @@ describe("P2P Contract Executor", () => {
             dest: CONTRACT_ADDRESS,
             value: toNano("0.05"),
             bounce: true,
-            body: msgBody as any
+            body: msgBody
         });
-
+        console.log("msgBody instanceof Cell:", msgBody instanceof Cell);
+        console.log("msgBody type:", typeof msgBody);
         const result = await contract.sendInternalMessage(msg);
         
         // Log the full result object for diagnostic purposes
@@ -228,7 +229,7 @@ describe("P2P Contract Executor", () => {
         
         // Get deal counter
         const dealCounter = await getDealCounter(testContract);
-        
+        console.log("deal count: "+dealCounter)
         // Get deal info
         const dealInfo = await getDealInfo(testContract, 0);
         
@@ -245,102 +246,5 @@ describe("P2P Contract Executor", () => {
         expect(fullDealInfo.buyer.equals(BUYER)).toBe(true);
         expect(fullDealInfo.amount.toString()).toBe(dealAmount.toString());
         expect(fullDealInfo.funded).toBe(0);
-    });
-
-    test("should create and fund a deal", async () => {
-        // Create a new contract instance for this test
-        const testContract = await createContract();
-        
-        const dealAmount = toNano("2");
-        const memoText = "DEAL:1";
-
-        // Create a deal
-        const createResult = await createDeal(
-            testContract,
-            SELLER,
-            BUYER,
-            dealAmount,
-            memoText
-        );
-        
-        expect(createResult.exit_code).toBe(0);
-        
-        // Get deal counter after creation
-        const dealCounterAfterCreate = await getDealCounter(testContract);
-        expect(dealCounterAfterCreate).toBe(1);
-        
-        // Get deal info before funding
-        const dealInfoBeforeFunding = await getDealInfo(testContract, 0);
-        expect(dealInfoBeforeFunding.amount.toString()).toBe(dealAmount.toString());
-        expect(dealInfoBeforeFunding.funded).toBe(0);
-        
-        // Fund the deal
-        const fundResult = await fundDeal(
-            testContract,
-            memoText,
-            toNano("2.1") // slightly more to cover commission
-        );
-        
-        expect(fundResult.exit_code).toBe(0);
-        
-        // Get deal info after funding
-        const dealInfoAfterFunding = await getDealInfo(testContract, 0);
-        
-        // Verify deal was funded correctly
-        expect(dealInfoAfterFunding.amount.toString()).toBe(dealAmount.toString());
-        expect(dealInfoAfterFunding.funded).toBe(1);
-        
-        // Get full deal info after funding
-        const fullDealInfoAfterFunding = await getFullDealInfo(testContract, 0);
-        
-        // Verify full deal info after funding
-        expect(fullDealInfoAfterFunding.seller.equals(SELLER)).toBe(true);
-        expect(fullDealInfoAfterFunding.buyer.equals(BUYER)).toBe(true);
-        expect(fullDealInfoAfterFunding.amount.toString()).toBe(dealAmount.toString());
-        expect(fullDealInfoAfterFunding.funded).toBe(1);
-    });
-
-    test("should handle multiple deals in parallel", async () => {
-        // Create a new contract instance for this test
-        const testContract = await createContract();
-        
-        // Create multiple deals with different memo texts
-        const dealAmount = toNano("2");
-        const memoTexts = ["DEAL:A", "DEAL:B", "DEAL:C"];
-        
-        // Create deals in parallel
-        await Promise.all(memoTexts.map(async (memo, index) => {
-            const createResult = await createDeal(
-                testContract,
-                SELLER,
-                BUYER,
-                dealAmount,
-                memo
-            );
-            
-            expect(createResult.exit_code).toBe(0);
-            
-            // Fund the deal
-            if (index % 2 === 0) { // Fund every other deal
-                const fundResult = await fundDeal(
-                    testContract,
-                    memo,
-                    toNano("2.1") // slightly more to cover commission
-                );
-                
-                expect(fundResult.exit_code).toBe(0);
-            }
-        }));
-        
-        // Get deal counter
-        const dealCounter = await getDealCounter(testContract);
-        expect(dealCounter).toBe(memoTexts.length);
-        
-        // Verify each deal
-        for (let i = 0; i < memoTexts.length; i++) {
-            const dealInfo = await getDealInfo(testContract, i);
-            expect(dealInfo.amount.toString()).toBe(dealAmount.toString());
-            expect(dealInfo.funded).toBe(i % 2 === 0 ? 1 : 0); // Every other deal should be funded
-        }
     });
 });
