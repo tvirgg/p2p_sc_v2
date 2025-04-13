@@ -68,6 +68,7 @@
 
     () recv_external(int msg_value, cell in_msg_cell) impure {
         accept_message(); ;; 🔧 Обязательно для записи состояния!
+        ~dump("HEHEHEBOYEXT");
         var (dc, dd, mm, uf, ma, cp) = load_data();
         slice cs = in_msg_cell.begin_parse();
         int op = cs~load_uint(32);
@@ -160,6 +161,7 @@
 
     () recv_internal(int msg_value, cell in_msg_full) impure {
         accept_message();
+        ~strdump("HEHEHEBOYINT");
         var (dc, dd, mm, uf, ma, cp) = load_data();
         slice cs = in_msg_full.begin_parse();
 

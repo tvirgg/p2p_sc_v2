@@ -78,7 +78,31 @@ describe("P2P Contract Executor", () => {
         });
 
         const result = await contract.sendInternalMessage(msg);
-        console.log("Create deal logs:", result.logs);
+        
+        // Log the full result object for diagnostic purposes
+        try {
+            const resultStr = JSON.stringify(result, (key, value) => 
+                typeof value === 'bigint' ? value.toString() : value
+            , 2);
+            process.stdout.write(`\n===== CREATE DEAL FULL RESULT =====\n${resultStr}\n===== END RESULT =====\n`);
+            
+            // Always log VM logs regardless of result type
+            process.stdout.write(`\n===== VM LOGS =====\n${result.logs || 'No logs available'}\n===== END VM LOGS =====\n`);
+            
+            // Analyze debug logs specially
+            if (result.debugLogs && result.debugLogs.length > 0) {
+                process.stdout.write(`\n===== DEBUG LOGS =====\n`);
+                for (const log of result.debugLogs) {
+                    process.stdout.write(`${log}\n`);
+                }
+                process.stdout.write(`===== END DEBUG LOGS =====\n`);
+            } else {
+                process.stdout.write(`\n===== NO DEBUG LOGS FOUND =====\n`);
+            }
+        } catch (e: any) {
+            process.stdout.write(`\nError stringifying result: ${e.message || 'Unknown error'}\nResult type: ${result.type}, exit_code: ${result.exit_code}\n`);
+        }
+        
         return result;
     }
 
@@ -105,9 +129,8 @@ describe("P2P Contract Executor", () => {
             body: msgBody as any
         });
 
-        const result = await contract.sendInternalMessage(msg);
-        console.log("Fund deal logs:", result.logs);
-        return result;
+        // Return the result without attempting to access potentially problematic properties
+        return await contract.sendInternalMessage(msg);
     }
 
     // Helper function to get deal info
@@ -115,7 +138,6 @@ describe("P2P Contract Executor", () => {
         const result = await contract.invokeGetMethod("get_deal_info", [
             stackInt(dealId)
         ]);
-        console.log("Get deal info logs:", result.logs);
         
         if (result.type !== "success") {
             throw new Error(`Failed to get deal info: ${result.exit_code}`);
@@ -130,7 +152,6 @@ describe("P2P Contract Executor", () => {
     // Helper function to get deal counter
     async function getDealCounter(contract: SmartContract) {
         const result = await contract.invokeGetMethod("get_deal_counter", []);
-        console.log("Get deal counter logs:", result.logs);
         
         if (result.type !== "success") {
             throw new Error(`Failed to get deal counter: ${result.exit_code}`);
