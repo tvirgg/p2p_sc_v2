@@ -73,8 +73,6 @@
         var (dc, dd, mm, uf, ma, cp) = load_data();
         ;;slice cs = in_msg_cell.begin_parse();
         slice cs = in_msg_cell;
-        ;;~strdump("cs:");
-        ;;~dump(cs);
         int op = cs~load_uint(32);
         slice sender = cs~load_msg_addr();
         if (op == op_create_deal) {
@@ -106,31 +104,65 @@
             ;; Return early to avoid saving data again at the end of the function
             return ();
         } elseif (op == op_resolve_deal) {
+            ~strdump("resolve_deal: Начало обработки сообщения");
+            
             cell m = cs~load_ref();
+            ~strdump("resolve_deal: Получен cell m:");
+            ~dump(m);
+            
             int x = cs~load_uint(1);
+            ~strdump("resolve_deal: Флаг утверждения (x):");
+            ~dump(x);
+            
             int mh = cell_hash(m);
+            ~strdump("resolve_deal: Хэш cell m (mh):");
+            ~dump(mh);
+            
             var (dslice, f) = mm.udict_get?(256, mh);
             throw_unless(110, f);
+            ~strdump("resolve_deal: dslice из mm для hash mh:");
+            ~dump(dslice);
+            
             int id = dslice~load_uint(32);
+            ~strdump("resolve_deal: Идентификатор сделки (id):");
+            ~dump(id);
+            
             (cell c, int found) = dd.udict_get_ref?(32, id);
             throw_unless(140, found);
+            ~strdump("resolve_deal: Получен cell c (сделка):");
+            ~dump(c);
+            
             slice d2 = c.begin_parse();
             slice s = d2~load_msg_addr();
+            ~strdump("resolve_deal: Адрес отправителя (s) сделки:");
+            ~dump(s);
+            
             slice b = d2~load_msg_addr();
+            ~strdump("resolve_deal: Адрес получателя (b) сделки:");
+            ~dump(b);
+            
             int amt = d2~load_coins();
+            ~strdump("resolve_deal: Сумма сделки (amt):");
+            ~dump(amt);
+            
             int funded = d2~load_uint(1);
+            ~strdump("resolve_deal: Флаг оплаты сделки (funded):");
+            ~dump(funded);
+            
             throw_unless(111, funded);
             if (x == 1) {
                 send_transfer(s, amt);
+                ~strdump("Отправка S");
             } else {
                 send_transfer(b, amt);
+                ~strdump("Отправка B");
             }
             dd~udict_delete?(32, id);
             mm~udict_delete?(256, mh);
-            
+            ~strdump("удалить dd mm");
             ;; Save the updated data immediately
             save_data(dc, dd, mm, uf, ma, cp);
-            
+            ~strdump("save data");
             ;; Return early to avoid saving data again at the end of the function
             return ();
         } elseif (op == op_refund_unknown) {

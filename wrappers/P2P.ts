@@ -124,26 +124,29 @@ export class P2P implements Contract {
     /**
      * Разрешение сделки (op = 2).
      */
-    async sendResolveDeal(
+    async sendResolveDealExternal( // Renamed for clarity, or keep sendResolveDeal if preferred
         provider: ContractProvider,
-        via: Sender,
+        moderatorAddress: Address, // The address to be WRITTEN into the body
         memo: string,
         approvePayment: boolean
-    ) {
+    ): Promise<void> { // external returns Promise<void> according to your interface
+    
+        // 1. Create the cell containing the memo string
         const memoCell = beginCell().storeStringTail(memo).endCell();
-
+    
+        // 2. Construct the external message body according to recv_external's expectations
         const msgBody = beginCell()
             .storeUint(2, 32) // op_resolve_deal
-            .storeUint(0, 64) // query_id (0 для простоты)
-            .storeRef(memoCell)
-            .storeUint(approvePayment ? 1 : 0, 1)
+            .storeAddress(moderatorAddress) // Store the moderator's address directly in the body
+            .storeRef(memoCell) // Store the memo cell as a reference
+            .storeUint(approvePayment ? 1 : 0, 1) // Store the approval flag (1 bit)
             .endCell();
-
-        return provider.internal(via, {
-            value: toNano("0.05"),
-            body: msgBody,
-            sendMode: SendMode.PAY_GAS_SEPARATELY,
-        });
+    
+        // 3. Call the provider's external method with the constructed body
+        return await provider.external(msgBody);
+    
+        // Note: External messages don't have 'value', 'bounce', 'sendMode' or an authenticated 'via' sender
+        // in the same way internal messages do. They are sent "from the outside".
     }
 
     /**

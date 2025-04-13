@@ -94,7 +94,10 @@ describe("P2P Contract Sandbox", () => {
 
         // Проверяем getDealInfo(0)
         const infoBefore = await contract.getDealInfo(0);
-        process.stdout.write(`🧮 Deal Info (index=0) = ${JSON.stringify(infoBefore)}\n`);
+        process.stdout.write(`🧮 Deal Info (index=0) = ${JSON.stringify({
+            ...infoBefore,
+            amount: infoBefore.amount
+        }, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n`);
         expect(infoBefore.amount.toString()).toBe(dealAmount.toString());
         expect(infoBefore.funded).toBe(0);
 
@@ -149,13 +152,13 @@ describe("P2P Contract Sandbox", () => {
         // Получаем информацию о сделке ДО финансирования
         const dealInfoBeforeFunding = await contract.getDealInfo(0);
         process.stdout.write(`📦 Данные сделки ДО финансирования: ${JSON.stringify({
-            amount: dealInfoBeforeFunding.amount.toString(),
+            amount: dealInfoBeforeFunding.amount,
             funded: dealInfoBeforeFunding.funded
-        })}\n`);
+        }, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n`);
 
         // Получаем полную информацию о сделке ДО финансирования
         const fullDealInfoBeforeFunding = await contract.getFullDealInfo(0);
-        process.stdout.write(`📋 Полная информация о сделке ДО финансирования: ${JSON.stringify(fullDealInfoBeforeFunding)}\n`);
+        process.stdout.write(`📋 Полная информация о сделке ДО финансирования: ${JSON.stringify(fullDealInfoBeforeFunding, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n`);
 
         // Шаг 2: финансирование сделки
         await contract.sendFundDeal(
@@ -184,7 +187,7 @@ describe("P2P Contract Sandbox", () => {
 
         // Получаем полную информацию о сделке ПОСЛЕ финансирования (для отладки)
         const fullDealInfoAfterFunding = await contract.getFullDealInfo(0);
-        process.stdout.write(`📋 Полная информация о сделке ПОСЛЕ финансирования: ${JSON.stringify(fullDealInfoAfterFunding)}\n`);
+        process.stdout.write(`📋 Полная информация о сделке ПОСЛЕ финансирования: ${JSON.stringify(fullDealInfoAfterFunding, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n`);
     });
 
     it("should resolve deal in favor of seller", async () => {
@@ -194,7 +197,8 @@ describe("P2P Contract Sandbox", () => {
         const buyerWallet = await blockchain.treasury("buyer");
         const dealAmount = toNano("2");
         const memoText = "deal-to-seller";
-
+        const buyerBalanceStart = await buyerWallet.getBalance();
+        process.stdout.write(`Buyer balance START resolution: ${buyerBalanceStart.toString()}\n`);
         // Шаг 1: создаём сделку (в данном случае адрес продавца берём из кошелька)
         await contract.sendCreateDeal(
             moderatorWallet.getSender(),
@@ -212,20 +216,42 @@ describe("P2P Contract Sandbox", () => {
             toNano("2.1")
         );
         process.stdout.write(`💰 Сделка профинансирована для теста разрешения\n`);
-
+        const buyerBalanceSend = await buyerWallet.getBalance();
+        process.stdout.write(`Buyer balance AFTER SEND: ${buyerBalanceSend.toString()}\n`);
         // Получаем баланс продавца до разрешения сделки
         const sellerBalanceBefore = await sellerWallet.getBalance();
         process.stdout.write(`Seller balance BEFORE resolution: ${sellerBalanceBefore.toString()}\n`);
 
         // Шаг 3: разрешение сделки в пользу продавца (approvePayment = true)
-        const resolveResult = await contract.sendResolveDeal(
-            moderatorWallet.getSender(),
-            memoText,
-            true  // разрешаем платеж в пользу продавца
+        const resolveResult = await contract.sendResolveDealExternal( // Call the corrected function
+            moderatorWallet.address,  // Moderator's address to be put in the message body
+            memoText,                 // The crucial memo
+            true                     
         );
+
+        // Log the full resolveResult object for debugging
+        if (resolveResult && Array.isArray(resolveResult.transactions) && resolveResult.transactions.length > 0) {
+            // 2. Берем первую транзакцию
+            const firstTransaction = resolveResult.transactions[0];
+        
+            // 3. Проверяем наличие debugLogs внутри этой транзакции и что значение не пустое/null/undefined
+            if ('debugLogs' in firstTransaction && firstTransaction.debugLogs) {
+            // 4. Выводим debugLogs из первой транзакции, каждую строку на отдельной строке
+            const debugLogs = firstTransaction.debugLogs.split('\n');
+            debugLogs.forEach((logLine) => {
+                process.stdout.write(`📋 Debug Log Line: ${logLine}\n`);
+            });
+            } else {
+            // Сообщение, если debugLogs отсутствует или пуст в первой транзакции
+            process.stdout.write(`📋 Debug Logs: null or empty in the first transaction\n`);
+            }
+        } else {
+            // Сообщение, если массив transactions отсутствует или пуст
+            process.stdout.write(`📋 Debug Logs: No transactions found or transactions array is empty\n`);
+        }
         expect(resolveResult.transactions).toHaveTransaction({
-            from: moderatorWallet.address,
             to: contract.address,
+            on: contract.address,
             success: true,
             op: 2,
         });
@@ -234,8 +260,11 @@ describe("P2P Contract Sandbox", () => {
         // Получаем баланс продавца после разрешения сделки
         const sellerBalanceAfter = await sellerWallet.getBalance();
         process.stdout.write(`Seller balance AFTER resolution: ${sellerBalanceAfter.toString()}\n`);
+        const buyerBalanceAfter = await buyerWallet.getBalance();
+        process.stdout.write(`Buyer balance AFTER resolution: ${buyerBalanceAfter.toString()}\n`);
 
         // Проверяем, что продавец получил как минимум сумму сделки
-        expect(sellerBalanceAfter - sellerBalanceBefore).toBeGreaterThanOrEqual(dealAmount);
+        const margin = toNano("0.03"); // Allowable margin for transaction fees
+        expect(sellerBalanceAfter - sellerBalanceBefore + margin).toBeGreaterThanOrEqual(dealAmount);
     });
 });
