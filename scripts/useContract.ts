@@ -217,46 +217,37 @@ async function main() {
             // Выводим информацию о memo cell
             console.log("   Memo cell hash:", resolveMemoCell.hash().toString('hex'));
             
-            // Пробуем альтернативный способ создания сообщения
-            // Вместо внешнего сообщения используем внутреннее сообщение от модератора
-            console.log("🔄 Используем внутреннее сообщение от модератора для разрешения сделки...");
+            // ВАЖНО: op_resolve_deal должен обрабатываться через recv_external в контракте
+            console.log("🔄 Создаем внешнее сообщение для разрешения сделки...");
             
-            const resolveBody = beginCell()
+            // Создаем тело внешнего сообщения согласно ожиданиям recv_external
+            const externalBody = beginCell()
                 .storeUint(2, 32) // op_resolve_deal
-                .storeUint(0, 64) // query_id
-                .storeRef(resolveMemoCell)
+                .storeAddress(moderatorAddress) // Адрес модератора
+                .storeRef(resolveMemoCell) // Memo как ссылка
                 .storeUint(1, 1) // 1 = в пользу продавца
                 .endCell();
             
-            // Отправляем сообщение через кошелек модератора
-            const resolveSeqno = await moderatorContract.getSeqno();
-            const resolveTransfer = moderatorWallet.createTransfer({
-                secretKey: moderatorKey.secretKey,
-                seqno: resolveSeqno,
-                messages: [
-                    {
-                        info: {
-                            type: "internal",
-                            ihrDisabled: true,
-                            bounce: true,
-                            bounced: false,
-                            dest: contractAddress,
-                            value: { coins: toNano("0.05") },
-                            ihrFee: 0n,
-                            forwardFee: 0n,
-                            createdLt: 0n,
-                            createdAt: Math.floor(Date.now() / 1000)
-                        },
-                        body: resolveBody
-                    }
-                ]
-            });
+            // Отправляем внешнее сообщение напрямую в контракт
+            console.log("📤 Отправка внешнего сообщения в контракт...");
             
-            await client.sendExternalMessage(moderatorWallet, resolveTransfer);
+            // Для внешних сообщений нам нужно создать экземпляр контракта
+            // Создаем внешнее сообщение в формате, который ожидает контракт
+            const externalMessage = beginCell()
+                .storeUint(0b10, 2) // ext_in_msg_info$10
+                .storeUint(0, 2) // src:MsgAddressExt
+                .storeAddress(contractAddress) // dest:MsgAddressInt
+                .storeCoins(0) // import_fee:Grams
+                .storeUint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1) // Заголовок сообщения
+                .storeRef(externalBody) // Тело сообщения как ссылка
+                .endCell();
+            
+            // Отправляем внешнее сообщение
+            await client.sendFile(externalMessage.toBoc());
+            
             console.log("✅ Транзакция разрешения сделки отправлена");
             console.log("📋 Детали транзакции разрешения сделки:");
-            console.log(`   Seqno: ${resolveSeqno}`);
-            console.log(`   Отправитель: ${moderatorAddress.toString()}`);
+            console.log(`   Отправитель: ${moderatorAddress.toString()} (внешнее сообщение)`);
             console.log(`   Получатель: ${contractAddress.toString()}`);
             console.log(`   Сумма: ${toNano("0.05").toString()} nanoTON`);
             console.log(`   Операция: op_resolve_deal (2)`);
