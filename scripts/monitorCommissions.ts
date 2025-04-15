@@ -85,6 +85,31 @@ async function getContractData(client: TonClient, contractAddress: Address) {
                     }
                 }
             }
+            // Вариант 4: Стек как объект с особой структурой (новый формат TON API)
+            else if (result.stack && typeof result.stack === 'object') {
+                // Проверяем, есть ли в выводе структура, которую мы видим в логах
+                try {
+                    // Попробуем получить данные напрямую из объекта stack
+                    const stack = result.stack as any;
+                    if (stack.items && Array.isArray(stack.items)) {
+                        const items = stack.items;
+                        if (items.length >= 2) {
+                            if (items[0] && items[0].type === 'int' && items[0].value) {
+                                dealCounter = Number(items[0].value);
+                            }
+                            if (items[1] && items[1].type === 'int' && items[1].value) {
+                                commissionsPool = BigInt(items[1].value);
+                            }
+                            if (items.length >= 3 && items[2] && items[2].type === 'cell') {
+                                moderatorAddress = "Адрес в cell";
+                            }
+                            console.log("✅ Использован вариант парсинга 4 (объект с items)");
+                        }
+                    }
+                } catch (jsonError: any) {
+                    console.error("❌ Ошибка при доступе к items:", jsonError.message);
+                }
+            }
             
             console.log("📊 Распарсенные данные:");
             console.log(`   Счетчик сделок: ${dealCounter}`);

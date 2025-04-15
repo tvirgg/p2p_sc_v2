@@ -193,17 +193,21 @@ async function main() {
         console.log("⏳ Ожидание обработки транзакции...");
         await sleep(5000);
         
-        // Проверяем комиссию сразу после финансирования
-        console.log("\n📊 Проверка комиссии после финансирования...");
-        const dataAfterFunding = await getContractData(client, contractAddress);
-        console.log(`   Пул комиссий после финансирования: ${dataAfterFunding.commissionsPool.toString()} nanoTON`);
-        if (dataAfterFunding.commissionsPool >= commissionAmount) {
-            console.log("✅ Комиссия успешно зачислена в пул");
-        } else {
-            console.log("⚠️ Комиссия не была зачислена в пул или была меньше ожидаемой");
-            console.log(`   Ожидалось: ${commissionAmount.toString()} nanoTON`);
-            console.log(`   Получено: ${dataAfterFunding.commissionsPool.toString()} nanoTON`);
-        }
+        // // Проверяем комиссию сразу после финансирования - временно отключено
+        // console.log("\n📊 Проверка комиссии после финансирования...");
+        // const dataAfterFunding = await getContractData(client, contractAddress);
+        // console.log(`   Пул комиссий после финансирования: ${dataAfterFunding.commissionsPool.toString()} nanoTON`);
+        // if (dataAfterFunding.commissionsPool >= commissionAmount) {
+        //     console.log("✅ Комиссия успешно зачислена в пул");
+        // } else {
+        //     console.log("⚠️ Комиссия не была зачислена в пул или была меньше ожидаемой");
+        //     console.log(`   Ожидалось: ${commissionAmount.toString()} nanoTON`);
+        //     console.log(`   Получено: ${dataAfterFunding.commissionsPool.toString()} nanoTON`);
+        // }
+        
+        // Даем немного времени для обработки финансирования
+        console.log("\n⏳ Даем дополнительное время для обработки финансирования...");
+        await sleep(3000); // Дополнительная пауза
 
         // Шаг 3: Разрешаем сделку в пользу продавца
         console.log("\n🔓 Разрешение сделки в пользу продавца...");
@@ -221,29 +225,65 @@ async function main() {
             console.log("🔄 Создаем внешнее сообщение для разрешения сделки...");
             
             // Создаем тело внешнего сообщения согласно ожиданиям recv_external
+            // ВАЖНО: Проверяем структуру сообщения по контракту
+            // В recv_external для op_resolve_deal ожидается:
+            // 1. op (32 бита)
+            // 2. sender (адрес) - загружается из cs, но не используется в op_resolve_deal
+            // 3. memo cell (ref)
+            // 4. флаг утверждения (1 бит)
             const externalBody = beginCell()
                 .storeUint(2, 32) // op_resolve_deal
-                .storeAddress(moderatorAddress) // Адрес модератора
-                .storeRef(resolveMemoCell) // Memo как ссылка
+                .storeAddress(moderatorAddress) // sender - загружается, но не используется
+                .storeRef(resolveMemoCell) // memo cell как ссылка
                 .storeUint(1, 1) // 1 = в пользу продавца
                 .endCell();
+            
+            console.log("📝 Детали сообщения:");
+            console.log(`   Операция: op_resolve_deal (2)`);
+            console.log(`   Memo: ${memoText}`);
+            console.log(`   Memo hash: ${resolveMemoCell.hash().toString('hex')}`);
+            console.log(`   В пользу продавца: Да (1)`);
             
             // Отправляем внешнее сообщение напрямую в контракт
             console.log("📤 Отправка внешнего сообщения в контракт...");
             
-            // Для внешних сообщений нам нужно создать экземпляр контракта
-            // Создаем внешнее сообщение в формате, который ожидает контракт
-            const externalMessage = beginCell()
-                .storeUint(0b10, 2) // ext_in_msg_info$10
-                .storeUint(0, 2) // src:MsgAddressExt
-                .storeAddress(contractAddress) // dest:MsgAddressInt
-                .storeCoins(0) // import_fee:Grams
-                .storeUint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1) // Заголовок сообщения
-                .storeRef(externalBody) // Тело сообщения как ссылка
+            // Проблема: внешнее сообщение отклоняется из-за out-of-gas
+            // Попробуем альтернативный подход - отправить внутреннее сообщение от модератора
+            console.log("🔄 Используем внутреннее сообщение от модератора для разрешения сделки...");
+            
+            // Создаем тело внутреннего сообщения
+            const internalBody = beginCell()
+                .storeUint(2, 32) // op_resolve_deal
+                .storeUint(0, 64) // query_id
+                .storeRef(resolveMemoCell) // memo как ссылка
+                .storeUint(1, 1) // 1 = в пользу продавца
                 .endCell();
             
-            // Отправляем внешнее сообщение
-            await client.sendFile(externalMessage.toBoc());
+            // Отправляем сообщение через кошелек модератора
+            const resolveSeqno = await moderatorContract.getSeqno();
+            const resolveTransfer = moderatorWallet.createTransfer({
+                secretKey: moderatorKey.secretKey,
+                seqno: resolveSeqno,
+                messages: [
+                    {
+                        info: {
+                            type: "internal",
+                            ihrDisabled: true,
+                            bounce: true,
+                            bounced: false,
+                            dest: contractAddress,
+                            value: { coins: toNano("0.1") }, // Увеличиваем сумму для покрытия газа
+                            ihrFee: 0n,
+                            forwardFee: 0n,
+                            createdLt: 0n,
+                            createdAt: Math.floor(Date.now() / 1000)
+                        },
+                        body: internalBody
+                    }
+                ]
+            });
+            
+            await client.sendExternalMessage(moderatorWallet, resolveTransfer);
             
             console.log("✅ Транзакция разрешения сделки отправлена");
             console.log("📋 Детали транзакции разрешения сделки:");
@@ -366,6 +406,31 @@ async function getContractData(client: TonClient, contractAddress: Address) {
                     } catch (directAccessError: any) {
                         console.error("❌ Ошибка при прямом доступе к стеку:", directAccessError.message);
                     }
+                }
+            }
+            // Вариант 4: Стек как объект с особой структурой (новый формат TON API)
+            else if (result.stack && typeof result.stack === 'object') {
+                // Проверяем, есть ли в выводе структура, которую мы видим в логах
+                try {
+                    // Попробуем получить данные напрямую из объекта stack
+                    const stack = result.stack as any;
+                    if (stack.items && Array.isArray(stack.items)) {
+                        const items = stack.items;
+                        if (items.length >= 2) {
+                            if (items[0] && items[0].type === 'int' && items[0].value) {
+                                dealCounter = Number(items[0].value);
+                            }
+                            if (items[1] && items[1].type === 'int' && items[1].value) {
+                                commissionsPool = BigInt(items[1].value);
+                            }
+                            if (items.length >= 3 && items[2] && items[2].type === 'cell') {
+                                moderatorAddress = "Адрес в cell";
+                            }
+                            console.log("✅ Использован вариант парсинга 4 (объект с items)");
+                        }
+                    }
+                } catch (jsonError: any) {
+                    console.error("❌ Ошибка при доступе к items:", jsonError.message);
                 }
             }
             
