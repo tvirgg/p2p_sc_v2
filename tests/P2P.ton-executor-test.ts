@@ -110,6 +110,17 @@
             console.log("BUYER :", fullInfo.buyer.toString());
             console.log("SELLER Raw:", SELLER.toRawString());
     console.log("BUYER Raw :", BUYER.toRawString());
+
+            // 👇 Используем доступные методы для отображения адресов:
+            console.log("SELLER toString():", fullInfo.seller.toString());
+            console.log("BUYER toString() :", fullInfo.buyer.toString());
+            // Альтернативный формат (если доступен):
+            try {
+                console.log("SELLER toRawString():", fullInfo.seller.toRawString());
+                console.log("BUYER toRawString() :", fullInfo.buyer.toRawString());
+            } catch (e) {
+                console.log("toRawString not available on these Address objects");
+            }
             return result;
         }
 
