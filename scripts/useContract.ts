@@ -154,40 +154,57 @@ async function main() {
         // Отправляем сообщение через кошелек покупателя
         const buyerSeqno = await buyerContract.getSeqno();
         
-        // Добавляем небольшой запас для газа
-        const sendAmount = totalAmount + toNano("0.05"); // Увеличиваем запас для газа
+        // Добавляем больший запас для газа
+        const sendAmount = totalAmount + toNano("0.1"); // Увеличиваем запас для газа
         
-        const fundDealTransfer = buyerWallet.createTransfer({
-            secretKey: buyerKey.secretKey,
-            seqno: buyerSeqno,
-            messages: [
-                {
-                    info: {
-                        type: "internal",
-                        ihrDisabled: true,
-                        bounce: true,
-                        bounced: false,
-                        dest: contractAddress,
-                        value: { coins: sendAmount }, // Сумма сделки + комиссия + запас на газ
-                        ihrFee: 0n,
-                        forwardFee: 0n,
-                        createdLt: 0n,
-                        createdAt: Math.floor(Date.now() / 1000)
-                    },
-                    body: fundDealBody
-                }
-            ]
-        });
-        
-        await client.sendExternalMessage(buyerWallet, fundDealTransfer);
-        console.log("✅ Транзакция финансирования отправлена");
-        console.log("📋 Детали транзакции финансирования:");
-        console.log(`   Seqno: ${buyerSeqno}`);
-        console.log(`   Отправитель: ${buyerAddress.toString()}`);
-        console.log(`   Получатель: ${contractAddress.toString()}`);
-        console.log(`   Отправлено: ${sendAmount.toString()} nanoTON`);
-        console.log(`   Операция: op_fund_deal (5)`);
-        console.log(`   Memo: ${memoText}`);
+        let fundingSuccess = false;
+        try {
+            console.log("🔄 Подготовка транзакции финансирования...");
+            const fundDealTransfer = buyerWallet.createTransfer({
+                secretKey: buyerKey.secretKey,
+                seqno: buyerSeqno,
+                messages: [
+                    {
+                        info: {
+                            type: "internal",
+                            ihrDisabled: true,
+                            bounce: true,
+                            bounced: false,
+                            dest: contractAddress,
+                            value: { coins: sendAmount }, // Сумма сделки + комиссия + запас на газ
+                            ihrFee: 0n,
+                            forwardFee: 0n,
+                            createdLt: 0n,
+                            createdAt: Math.floor(Date.now() / 1000)
+                        },
+                        body: fundDealBody
+                    }
+                ]
+            });
+            
+            console.log("🔄 Отправка транзакции финансирования...");
+            await client.sendExternalMessage(buyerWallet, fundDealTransfer);
+            fundingSuccess = true;
+            
+            console.log("✅ Транзакция финансирования отправлена");
+            console.log("📋 Детали транзакции финансирования:");
+            console.log(`   Seqno: ${buyerSeqno}`);
+            console.log(`   Отправитель: ${buyerAddress.toString()}`);
+            console.log(`   Получатель: ${contractAddress.toString()}`);
+            console.log(`   Отправлено: ${sendAmount.toString()} nanoTON`);
+            console.log(`   Операция: op_fund_deal (5)`);
+            console.log(`   Memo: ${memoText}`);
+        } catch (fundError: any) {
+            console.error("❌ Ошибка при финансировании сделки:", fundError.message);
+            if (fundError.response) {
+                console.error("   Статус ошибки:", fundError.response.status);
+                console.error("   Данные ошибки:", fundError.response.data);
+            }
+            console.log("⚠️ Продолжаем выполнение скрипта несмотря на ошибку...");
+            // Даем время для обработки предыдущих транзакций
+            console.log("⏳ Ожидание 10 секунд перед продолжением...");
+            await sleep(10000);
+        }
 
         // Ждем немного для обработки транзакции
         console.log("⏳ Ожидание обработки транзакции...");
@@ -212,6 +229,7 @@ async function main() {
         // Шаг 3: Разрешаем сделку в пользу продавца
         console.log("\n🔓 Разрешение сделки в пользу продавца...");
         
+        let resolveSuccess = false;
         try {
             // Создаем тело сообщения для разрешения сделки
             const resolveMemoCell = beginCell().storeStringTail(memoText).endCell();
@@ -284,12 +302,13 @@ async function main() {
             });
             
             await client.sendExternalMessage(moderatorWallet, resolveTransfer);
+            resolveSuccess = true;
             
             console.log("✅ Транзакция разрешения сделки отправлена");
             console.log("📋 Детали транзакции разрешения сделки:");
             console.log(`   Отправитель: ${moderatorAddress.toString()} (внешнее сообщение)`);
             console.log(`   Получатель: ${contractAddress.toString()}`);
-            console.log(`   Сумма: ${toNano("0.05").toString()} nanoTON`);
+            console.log(`   Сумма: ${toNano("0.1").toString()} nanoTON`);
             console.log(`   Операция: op_resolve_deal (2)`);
             console.log(`   Memo: ${memoText}`);
             console.log(`   В пользу продавца: Да (1)`);
@@ -300,6 +319,9 @@ async function main() {
                 console.error("   Данные ошибки:", resolveError.response.data);
             }
             console.log("⚠️ Продолжаем выполнение скрипта несмотря на ошибку...");
+            // Даем время для обработки предыдущих транзакций
+            console.log("⏳ Ожидание 10 секунд перед продолжением...");
+            await sleep(10000);
         }
 
         // Ждем немного для обработки транзакции
