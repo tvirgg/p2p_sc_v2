@@ -10,15 +10,22 @@
 
     int equal_slice_bits(slice a, slice b) asm "SDEQ";
 
-    () send_transfer(slice dest, int grams) impure inline {
-        var msg = begin_cell()
-            .store_uint(0x10, 6)
-            .store_slice(dest)
-            .store_coins(grams)
-            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
-            .end_cell();
-        send_raw_message(msg, 1);
-    }
+() send_transfer(slice dest, int grams) impure inline {
+    ~strdump("=== SEND_TRANSFER ===");
+    ~dump(dest); ;; 🟡 логируем slice
+
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(dest)
+        .store_coins(grams)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+
+    ~strdump("=== RAW MSG TO SEND ===");
+    ~dump(msg); ;; 🟡 логируем сообщение
+
+    send_raw_message(msg, 1);
+}
 
     ;;() require_moderator(slice sender, slice moderator_address) impure inline {
     ;;    throw_unless(999, equal_slice_bits(sender, moderator_address));

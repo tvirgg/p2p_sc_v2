@@ -5,7 +5,11 @@
         "bp": "blueprint",
         "start": "blueprint run",
         "build": "blueprint build",
-        "test": "jest --verbose"
+        "test": "jest --verbose",
+        "use-contract": "ts-node scripts/useContract.ts",
+        "monitor-commissions": "ts-node scripts/monitorCommissions.ts",
+        "check-commissions": "ts-node scripts/monitorCommissions.ts --check",
+        "monitor": "ts-node scripts/monitorCommissions.ts --monitor"
     },
     "devDependencies": {
         "@tact-lang/compiler": "^1.6.5",
@@ -33,6 +37,7 @@
         "@ton-community/blueprint": "^0.6.4",
         "@ton-community/sandbox": "^0.11.0",
         "@ton/core": "^0.0.60",
-        "chai": "^5.2.0"
+        "chai": "^5.2.0",
+        "tonweb": "^0.0.66"
     }
 }
