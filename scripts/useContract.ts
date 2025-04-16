@@ -59,10 +59,20 @@ async function main() {
     }
 
     // Проверяем баланс покупателя
-    const buyerBalance = await buyerContract.getBalance();
-    console.log("💰 Баланс покупателя:", buyerBalance.toString(), "nanoTON");
-    if (buyerBalance < toNano("0.1")) {
+    const buyerBalanceBefore = await buyerContract.getBalance();
+    console.log("💰 Баланс покупателя ДО сделки:", buyerBalanceBefore.toString(), "nanoTON");
+    if (buyerBalanceBefore < toNano("0.1")) {
         throw new Error("Недостаточно TON на кошельке покупателя!");
+    }
+
+    // Проверяем баланс продавца
+    let sellerBalanceBefore = 0n;
+    try {
+        sellerBalanceBefore = await client.getBalance(sellerAddress);
+        console.log("💰 Баланс продавца ДО сделки:", sellerBalanceBefore.toString(), "nanoTON");
+    } catch (error: any) {
+        console.log("⚠️ Не удалось получить баланс продавца:", error.message);
+        console.log("   Продолжаем выполнение...");
     }
 
     // Параметры сделки
@@ -343,6 +353,32 @@ async function main() {
             console.log("✅ Комиссия успешно зачислена в пул");
         } else {
             console.log("⚠️ Комиссия не была зачислена в пул или была меньше ожидаемой");
+        }
+
+        // Проверяем балансы после завершения сделки
+        console.log("\n💰 Проверка балансов после завершения сделки...");
+        
+        // Баланс покупателя после сделки
+        const buyerBalanceAfter = await buyerContract.getBalance();
+        console.log("💰 Баланс покупателя ПОСЛЕ сделки:", buyerBalanceAfter.toString(), "nanoTON");
+        const buyerDifference = buyerBalanceAfter - buyerBalanceBefore;
+        console.log(`   Изменение баланса покупателя: ${buyerDifference.toString()} nanoTON`);
+        
+        // Баланс продавца после сделки
+        try {
+            const sellerBalanceAfter = await client.getBalance(sellerAddress);
+            console.log("💰 Баланс продавца ПОСЛЕ сделки:", sellerBalanceAfter.toString(), "nanoTON");
+            const sellerDifference = sellerBalanceAfter - sellerBalanceBefore;
+            console.log(`   Изменение баланса продавца: ${sellerDifference.toString()} nanoTON`);
+            
+            // Проверяем, получил ли продавец сумму сделки
+            if (sellerDifference >= dealAmount) {
+                console.log("✅ Продавец успешно получил сумму сделки");
+            } else {
+                console.log("⚠️ Продавец получил меньше ожидаемой суммы сделки");
+            }
+        } catch (error: any) {
+            console.log("⚠️ Не удалось получить баланс продавца после сделки:", error.message);
         }
 
         console.log("\n🎉 Все операции выполнены успешно!");
