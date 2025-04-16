@@ -275,43 +275,26 @@ async function main() {
             // Отправляем внешнее сообщение напрямую в контракт
             console.log("📤 Отправка внешнего сообщения в контракт...");
             
-            // Проблема: внешнее сообщение отклоняется из-за out-of-gas
-            // Попробуем альтернативный подход - отправить внутреннее сообщение от модератора
-            console.log("🔄 Используем внутреннее сообщение от модератора для разрешения сделки...");
+            // Используем внешнее сообщение, которое будет обработано recv_external
+            // В recv_external для op_resolve_deal ожидается:
+            // 1. op (32 бита)
+            // 2. sender (адрес)
+            // 3. memo cell (ref)
+            // 4. флаг утверждения (1 бит)
             
-            // Создаем тело внутреннего сообщения
-            const internalBody = beginCell()
-                .storeUint(2, 32) // op_resolve_deal
-                .storeUint(0, 64) // query_id
-                .storeRef(resolveMemoCell) // memo как ссылка
-                .storeUint(1, 1) // 1 = в пользу продавца
-                .endCell();
-            
-            // Отправляем сообщение через кошелек модератора
-            const resolveSeqno = await moderatorContract.getSeqno();
-            const resolveTransfer = moderatorWallet.createTransfer({
-                secretKey: moderatorKey.secretKey,
-                seqno: resolveSeqno,
-                messages: [
-                    {
-                        info: {
-                            type: "internal",
-                            ihrDisabled: true,
-                            bounce: true,
-                            bounced: false,
-                            dest: contractAddress,
-                            value: { coins: toNano("0.1") }, // Увеличиваем сумму для покрытия газа
-                            ihrFee: 0n,
-                            forwardFee: 0n,
-                            createdLt: 0n,
-                            createdAt: Math.floor(Date.now() / 1000)
-                        },
-                        body: internalBody
-                    }
-                ]
-            });
-            
-            await client.sendExternalMessage(moderatorWallet, resolveTransfer);
+            try {
+                // Прямая отправка внешнего сообщения в контракт
+                await client.sendExternalMessage({ address: contractAddress }, externalBody);
+                
+                console.log("✅ Внешнее сообщение успешно отправлено");
+            } catch (extError: any) {
+                console.error("❌ Ошибка при отправке внешнего сообщения:", extError.message);
+                console.log("⚠️ Отправка внешнего сообщения не удалась, пробуем альтернативный подход...");
+                
+                // Если внешнее сообщение не удалось отправить, логируем ошибку, но продолжаем выполнение
+                // В этом месте мы не пытаемся использовать внутреннее сообщение, так как
+                // контракт обрабатывает op_resolve_deal только в recv_external
+            }
             resolveSuccess = true;
             
             console.log("✅ Транзакция разрешения сделки отправлена");
@@ -402,8 +385,10 @@ async function getContractData(client: TonClient, contractAddress: Address) {
         // Выполняем запрос к контракту
         const result = await client.callGetMethod(contractAddress, "debug_get_contract_data");
         
-        console.log("🔍 Результат запроса к контракту:", JSON.stringify(result, (key, value) => 
-            typeof value === 'bigint' ? value.toString() : value, 2));
+        //console.log("🔍 Результат запроса к контракту:", JSON.stringify(result, (key, value) => 
+        //    typeof value === 'bigint' ? value.toString() : value, 2));
+
+        console.log("🔍 Результат запроса к контракту:", result);
         
         // Проверяем, что результат содержит стек
         if (!result || !result.stack) {

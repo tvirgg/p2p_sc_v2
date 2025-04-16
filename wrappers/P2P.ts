@@ -89,7 +89,7 @@ export class P2P implements Contract {
             .storeRef(memoCell)
             .endCell();
 
-        return provider.internal(via, {
+        return await provider.internal(via, {
             value: toNano("0.05"),
             sendMode: SendMode.PAY_GAS_SEPARATELY,
             body: msgBody,

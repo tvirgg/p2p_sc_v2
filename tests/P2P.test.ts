@@ -18,7 +18,7 @@ describe("P2P Contract Sandbox", () => {
         blockchain = await Blockchain.create();
         blockchain.verbosity = {
             blockchainLogs: true,
-            vmLogs: "vm_logs_full",
+            vmLogs: "vm_logs",
             debugLogs: true,
             print: false,
         };
@@ -133,7 +133,7 @@ describe("P2P Contract Sandbox", () => {
         expect(moderatorAddress.equals(moderatorWallet.address)).toBe(true);
 
         // Шаг 1: создаём сделку
-        await contract.sendCreateDeal(
+        const createResult = await contract.sendCreateDeal(
             moderatorWallet.getSender(),
             SELLER,
             BUYER,
@@ -141,7 +141,30 @@ describe("P2P Contract Sandbox", () => {
             memoText
         );
         process.stdout.write(`✅ Сделка создана\n`);
-
+        
+        // Вспомогательная функция для рекурсивного вывода debug logs из всех транзакций
+        function printAllDebugLogs(transaction: any): void {
+            if (!transaction) return;
+            
+            // Вывод debug logs из текущей транзакции
+            if (transaction.debugLogs) {
+                process.stdout.write(`📋 DEBUG LOGS (${transaction.address || 'unknown'}):\n`);
+                transaction.debugLogs.split('\n').forEach((line: string) => {
+                    if (line.trim()) {
+                        process.stdout.write(`    ${line}\n`);
+                    }
+                });
+            }
+            
+            // Рекурсивно обрабатываем дочерние транзакции
+            if (transaction.children && Array.isArray(transaction.children)) {
+                transaction.children.forEach((child: any) => printAllDebugLogs(child));
+            }
+        }
+        
+        // Выводим все debug logs из иерархии транзакций
+        process.stdout.write(`🔍 ВСЕ DEBUG LOGS ДЛЯ createResult:\n`);
+        printAllDebugLogs(createResult);
         // Получаем данные контракта после создания сделки
         const contractDataAfterCreate = await contract.getContractData();
         process.stdout.write(`📊 Данные контракта ПОСЛЕ создания: ${JSON.stringify(contractDataAfterCreate)}\n`);
@@ -195,18 +218,52 @@ describe("P2P Contract Sandbox", () => {
         // чтобы можно было проверить перевод средств продавцу.
         const sellerWallet = await blockchain.treasury("seller");
         const buyerWallet = await blockchain.treasury("buyer");
+
+        process.stdout.write(`🏁 Продавец адрес: ${sellerWallet.address.toString()}\n`);
+        process.stdout.write(`🏁 Покупатель адрес: ${buyerWallet.address.toString()}\n`);
         const dealAmount = toNano("2");
         const memoText = "deal-to-seller";
         const buyerBalanceStart = await buyerWallet.getBalance();
         process.stdout.write(`Buyer balance START resolution: ${buyerBalanceStart.toString()}\n`);
         // Шаг 1: создаём сделку (в данном случае адрес продавца берём из кошелька)
-        await contract.sendCreateDeal(
+        const createResult = await contract.sendCreateDeal(
             moderatorWallet.getSender(),
             sellerWallet.address,
-            Address.parse(BUYER_HEX),
+            buyerWallet.address,
             dealAmount,
             memoText
         );
+        // Вспомогательная функция для рекурсивного вывода debug logs из всех транзакций
+        function extractAndPrintAllDebugLogs(obj: any, visited = new Set()): void {
+            if (!obj || typeof obj !== 'object' || visited.has(obj)) return;
+            visited.add(obj);
+        
+            if (typeof obj.debugLogs === 'string') {
+                process.stdout.write(`📋 DEBUG LOGS:\n`);
+                obj.debugLogs.split('\n').forEach((line: string) => {
+                    if (line.trim()) {
+                        process.stdout.write(`    ${line}\n`);
+                    }
+                });
+            }
+        
+            for (const key in obj) {
+                if (obj.hasOwnProperty(key)) {
+                    const val = obj[key];
+        
+                    if (Array.isArray(val)) {
+                        val.forEach((child) => extractAndPrintAllDebugLogs(child, visited));
+                    } else if (typeof val === 'object' && val !== null) {
+                        extractAndPrintAllDebugLogs(val, visited);
+                    }
+                }
+            }
+        }
+        
+        // Выводим все debug logs из иерархии транзакций
+        process.stdout.write(`🔍 ВСЕ DEBUG LOGS ДЛЯ createResult:\n`);
+        extractAndPrintAllDebugLogs(createResult);
+        
         process.stdout.write(`✅ Сделка создана для теста разрешения\n`);
 
         // Шаг 2: финансирование сделки
@@ -226,7 +283,7 @@ describe("P2P Contract Sandbox", () => {
         const resolveResult = await contract.sendResolveDealExternal( // Call the corrected function
             moderatorWallet.address,  // Moderator's address to be put in the message body
             memoText,                 // The crucial memo
-            true                     
+            false                     
         );
 
         // Log the full resolveResult object for debugging

@@ -11,20 +11,28 @@
     int equal_slice_bits(slice a, slice b) asm "SDEQ";
 
 () send_transfer(slice dest, int grams) impure inline {
-    ~strdump("=== SEND_TRANSFER ===");
-    ~dump(dest); ;; 🟡 логируем slice
-
+    ~strdump("========== SEND_TRANSFER START ==========");
+    ~strdump("Отправка средств получателю");
+    ~strdump("Адрес получателя (dest):");
+    ~dump(dest);
+    ~strdump("Сумма перевода (grams):");
+    ~dump(grams);
+    
+    ;; Простая отправка монет, самый базовый вариант
     var msg = begin_cell()
-        .store_uint(0x10, 6)
-        .store_slice(dest)
-        .store_coins(grams)
-        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0x18, 6)             ;; 0x18 = 011000 (bouncing internal message)
+        .store_slice(dest)               ;; адрес получателя
+        .store_coins(grams)              ;; сумма перевода
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1) ;; пустое тело (нет initialize bit + body)
         .end_cell();
 
-    ~strdump("=== RAW MSG TO SEND ===");
-    ~dump(msg); ;; 🟡 логируем сообщение
-
+    ~strdump("Сформировано сообщение:");
+    ~dump(msg);
+    
+    ~strdump("Отправка сообщения (send_raw_message)...");
     send_raw_message(msg, 1);
+    ~strdump("Сообщение отправлено с mode = 1 (стандартный режим)");
+    ~strdump("========== SEND_TRANSFER END ==========");
 }
 
     ;;() require_moderator(slice sender, slice moderator_address) impure inline {
@@ -157,10 +165,15 @@
             ~dump(funded);
             
             throw_unless(111, funded);
+            ~strdump("resolve_deal: Значение флага x после загрузки:");
+            ~dump(x);
+            
             if (x == 1) {
+                ~strdump("resolve_deal: x == 1, отправляем средства ПРОДАВЦУ");
                 send_transfer(s, amt);
                 ~strdump("Отправка S");
             } else {
+                ~strdump("resolve_deal: x == 0, отправляем средства ПОКУПАТЕЛЮ");
                 send_transfer(b, amt);
                 ~strdump("Отправка B");
             }
@@ -220,6 +233,12 @@
                 int query_id = cs~load_uint(64);
                 slice s = cs~load_msg_addr();
                 slice b = cs~load_msg_addr();
+
+                ~strdump(">> CREATE_DEAL: Адрес продавца (s):");
+                ~dump(s);
+                ~strdump(">> CREATE_DEAL: Адрес покупателя (b):");
+                ~dump(b);
+
                 int a = cs~load_coins();
                 cell m = cs~load_ref();
                 int mh = cell_hash(m);
