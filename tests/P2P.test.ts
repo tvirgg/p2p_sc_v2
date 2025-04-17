@@ -4,6 +4,9 @@ import { Blockchain, SandboxContract, TreasuryContract } from "@ton-community/sa
 import { P2P } from "../wrappers/P2P";
 import '@ton-community/test-utils';
 
+// Define constants from the contract
+const COMMISSION_WITH_MEMO = 3; // 3% commission for deals with memo
+
 describe("P2P Contract Sandbox", () => {
     let blockchain: Blockchain;
     let contract: SandboxContract<P2P>;
@@ -283,7 +286,7 @@ describe("P2P Contract Sandbox", () => {
         const resolveResult = await contract.sendResolveDealExternal( // Call the corrected function
             moderatorWallet.address,  // Moderator's address to be put in the message body
             memoText,                 // The crucial memo
-            false                     
+            true                     
         );
 
         // Log the full resolveResult object for debugging
@@ -323,5 +326,117 @@ describe("P2P Contract Sandbox", () => {
         // Проверяем, что продавец получил как минимум сумму сделки
         const margin = toNano("0.03"); // Allowable margin for transaction fees
         expect(sellerBalanceAfter - sellerBalanceBefore + margin).toBeGreaterThanOrEqual(dealAmount);
+    });
+    it("should resolve deal in favor of buyer", async () => {
+        // Для данного теста создаём кошельки для продавца и покупателя,
+        // чтобы можно было проверить перевод средств продавцу.
+        const sellerWallet = await blockchain.treasury("seller");
+        const buyerWallet = await blockchain.treasury("buyer");
+
+        process.stdout.write(`🏁 Продавец адрес: ${sellerWallet.address.toString()}\n`);
+        process.stdout.write(`🏁 Покупатель адрес: ${buyerWallet.address.toString()}\n`);
+        const dealAmount = toNano("2");
+        const memoText = "deal-to-seller";
+        const buyerBalanceStart = await buyerWallet.getBalance();
+        process.stdout.write(`Buyer balance START resolution: ${buyerBalanceStart.toString()}\n`);
+        // Шаг 1: создаём сделку (в данном случае адрес продавца берём из кошелька)
+        const createResult = await contract.sendCreateDeal(
+            moderatorWallet.getSender(),
+            sellerWallet.address,
+            buyerWallet.address,
+            dealAmount,
+            memoText
+        );
+        // Вспомогательная функция для рекурсивного вывода debug logs из всех транзакций
+        function extractAndPrintAllDebugLogs(obj: any, visited = new Set()): void {
+            if (!obj || typeof obj !== 'object' || visited.has(obj)) return;
+            visited.add(obj);
+        
+            if (typeof obj.debugLogs === 'string') {
+                process.stdout.write(`📋 DEBUG LOGS:\n`);
+                obj.debugLogs.split('\n').forEach((line: string) => {
+                    if (line.trim()) {
+                        process.stdout.write(`    ${line}\n`);
+                    }
+                });
+            }
+        
+            for (const key in obj) {
+                if (obj.hasOwnProperty(key)) {
+                    const val = obj[key];
+        
+                    if (Array.isArray(val)) {
+                        val.forEach((child) => extractAndPrintAllDebugLogs(child, visited));
+                    } else if (typeof val === 'object' && val !== null) {
+                        extractAndPrintAllDebugLogs(val, visited);
+                    }
+                }
+            }
+        }
+        
+        // Выводим все debug logs из иерархии транзакций
+        process.stdout.write(`🔍 ВСЕ DEBUG LOGS ДЛЯ createResult:\n`);
+        extractAndPrintAllDebugLogs(createResult);
+        
+        process.stdout.write(`✅ Сделка создана для теста разрешения\n`);
+
+        // Шаг 2: финансирование сделки
+        await contract.sendFundDeal(
+            buyerWallet.getSender(),
+            memoText,
+            toNano("2.1")
+        );
+        process.stdout.write(`💰 Сделка профинансирована для теста разрешения\n`);
+        const buyerBalanceSend = await buyerWallet.getBalance();
+        process.stdout.write(`Buyer balance AFTER SEND: ${buyerBalanceSend.toString()}\n`);
+        // Получаем баланс продавца до разрешения сделки
+        const sellerBalanceBefore = await sellerWallet.getBalance();
+        process.stdout.write(`Seller balance BEFORE resolution: ${sellerBalanceBefore.toString()}\n`);
+
+        // Шаг 3: разрешение сделки в пользу продавца (approvePayment = true)
+        const resolveResult = await contract.sendResolveDealExternal( // Call the corrected function
+            moderatorWallet.address,  // Moderator's address to be put in the message body
+            memoText,                 // The crucial memo
+            false                     
+        );
+
+        // Log the full resolveResult object for debugging
+        if (resolveResult && Array.isArray(resolveResult.transactions) && resolveResult.transactions.length > 0) {
+            // 2. Берем первую транзакцию
+            const firstTransaction = resolveResult.transactions[0];
+        
+            // 3. Проверяем наличие debugLogs внутри этой транзакции и что значение не пустое/null/undefined
+            if ('debugLogs' in firstTransaction && firstTransaction.debugLogs) {
+            // 4. Выводим debugLogs из первой транзакции, каждую строку на отдельной строке
+            const debugLogs = firstTransaction.debugLogs.split('\n');
+            debugLogs.forEach((logLine) => {
+                process.stdout.write(`📋 Debug Log Line: ${logLine}\n`);
+            });
+            } else {
+            // Сообщение, если debugLogs отсутствует или пуст в первой транзакции
+            process.stdout.write(`📋 Debug Logs: null or empty in the first transaction\n`);
+            }
+        } else {
+            // Сообщение, если массив transactions отсутствует или пуст
+            process.stdout.write(`📋 Debug Logs: No transactions found or transactions array is empty\n`);
+        }
+        expect(resolveResult.transactions).toHaveTransaction({
+            to: contract.address,
+            on: contract.address,
+            success: true,
+            op: 2,
+        });
+        process.stdout.write(`✅ Сделка разрешена в пользу покупателя\n`);
+
+        // Получаем баланс продавца после разрешения сделки
+        const sellerBalanceAfter = await sellerWallet.getBalance();
+        process.stdout.write(`Seller balance AFTER resolution: ${sellerBalanceAfter.toString()}\n`);
+        const buyerBalanceAfter = await buyerWallet.getBalance();
+        process.stdout.write(`Buyer balance AFTER resolution: ${buyerBalanceAfter.toString()}\n`);
+
+        // Проверяем, что покупатель не потерял больше, чем комиссию + транзакционные издержки
+        const commission = (dealAmount * BigInt(COMMISSION_WITH_MEMO)) / 100n; // 3% commission
+        const margin = toNano("0.05"); // Allowable margin for transaction fees
+        expect(buyerBalanceStart - buyerBalanceAfter).toBeLessThanOrEqual(commission + margin);
     });
 });
