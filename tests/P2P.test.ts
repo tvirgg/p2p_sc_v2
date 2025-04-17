@@ -439,4 +439,67 @@ describe("P2P Contract Sandbox", () => {
         const margin = toNano("0.05"); // Allowable margin for transaction fees
         expect(buyerBalanceStart - buyerBalanceAfter).toBeLessThanOrEqual(commission + margin);
     });
+    it("should allow moderator to withdraw commissions", async () => {
+        const moderatorBalanceBefore = await moderatorWallet.getBalance();
+        process.stdout.write(`💼 Баланс модератора ДО снятия комиссий: ${moderatorBalanceBefore.toString()}\n`);
+    
+        // Шаг 1: создаем сделку и финансируем ее, чтобы накопились комиссии
+        const SELLER = await blockchain.treasury("seller");
+        const BUYER = await blockchain.treasury("buyer");
+        const memoText = "withdraw-test";
+        const dealAmount = toNano("2");
+    
+        await contract.sendCreateDeal(
+            moderatorWallet.getSender(),
+            SELLER.address,
+            BUYER.address,
+            dealAmount,
+            memoText
+        );
+    
+        await contract.sendFundDeal(
+            BUYER.getSender(),
+            memoText,
+            toNano("2.1") // с учетом комиссии
+        );
+    
+        // Получаем данные контракта после финансирования
+        const contractDataBeforeWithdraw = await contract.getContractData();
+        const commissionsBefore = contractDataBeforeWithdraw.commissionsPool;
+        process.stdout.write(`🏦 Размер пула комиссий ДО снятия: ${commissionsBefore.toString()}\n`);
+        expect(commissionsBefore).toBeGreaterThan(0n);
+    
+        // Шаг 2: модератор снимает комиссию
+        const withdrawAmount = toNano("0.03");
+        const withdrawResult = await contract.sendWithdrawCommissions(
+            moderatorWallet.getSender(),
+            withdrawAmount
+        );
+    
+        // Проверка транзакции
+        expect(withdrawResult.transactions).toHaveTransaction({
+            from: moderatorWallet.address,
+            to: contract.address,
+            success: true,
+            op: 4,
+        });
+        process.stdout.write(`✅ Комиссия успешно снята модератором\n`);
+    
+        // Получаем данные контракта после снятия
+        const contractDataAfterWithdraw = await contract.getContractData();
+        const commissionsAfter = contractDataAfterWithdraw.commissionsPool;
+        process.stdout.write(`🏦 Размер пула комиссий ПОСЛЕ снятия: ${commissionsAfter.toString()}\n`);
+    
+        // Проверка, что комиссия действительно уменьшилась
+        expect(commissionsAfter).toBeLessThan(commissionsBefore);
+    
+        // Проверяем, что баланс модератора увеличился (с учетом возможных издержек)
+        const moderatorBalanceAfter = await moderatorWallet.getBalance();
+        const delta = moderatorBalanceAfter - moderatorBalanceBefore;
+        process.stdout.write(`💼 Баланс модератора ПОСЛЕ: ${moderatorBalanceAfter.toString()}\n`);
+        process.stdout.write(`📈 Δ Баланс: ${delta.toString()}\n`);
+    
+        const minimumExpected = toNano("0.01"); // допустимая разница, чтобы покрыть комиссии
+        expect(delta).toBeGreaterThanOrEqual(minimumExpected);
+    });    
 });
