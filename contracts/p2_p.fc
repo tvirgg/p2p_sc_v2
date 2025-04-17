@@ -35,9 +35,16 @@
     ~strdump("========== SEND_TRANSFER END ==========");
 }
 
-    ;;() require_moderator(slice sender, slice moderator_address) impure inline {
-    ;;    throw_unless(999, equal_slice_bits(sender, moderator_address));
-    ;;}
+    () require_moderator(slice sender, slice moderator_address) impure inline {
+        ~strdump(">> REQUIRE_MODERATOR CALL");
+        ~dump(moderator_address);
+        ~dump(sender);
+        if (equal_slice_bits(sender, moderator_address) == 0) {
+            ~strdump(">> ACCESS FORBIDDEN");
+            ~dump(sender);
+            throw(999);
+        }
+    }
     (int, cell, cell, cell, slice, int) load_data() impure {
         cell data = get_data();
         if (cell_null?(data)) {
@@ -83,13 +90,17 @@
 
     () recv_external(slice in_msg_cell) impure {
         accept_message(); ;; 🔧 Обязательно для записи состояния!
-        ~strdump("in_msg_cell:");
-        ~dump(in_msg_cell);
+        ~strdump(">> EXTERNAL START");
         var (dc, dd, mm, uf, ma, cp) = load_data();
-        ;;slice cs = in_msg_cell.begin_parse();
         slice cs = in_msg_cell;
         int op = cs~load_uint(32);
         slice sender = cs~load_msg_addr();
+        require_moderator(sender, ma);
+        ~strdump("in_msg_cell:");
+        ~dump(in_msg_cell);
+        
+        ;;slice cs = in_msg_cell.begin_parse();
+        
         if (op == op_create_deal) {
             slice s = cs~load_msg_addr();
             slice b = cs~load_msg_addr();
@@ -201,11 +212,11 @@
             ;; Return early to avoid saving data again at the end of the function
             return ();
         } elseif (op == op_withdraw_commissions) {
-            int amt = cs~load_coins();
-            throw_if(160, amt > cp);
-            cp -= amt;
-            send_transfer(sender, amt);
-            
+            ;;int amt = cs~load_coins();
+            ;;жжthrow_if(160, amt > cp);
+            ;;cp -= amt;
+            send_transfer(sender, cp);
+            cp -= cp;
             ;; Save the updated data immediately
             save_data(dc, dd, mm, uf, ma, cp);
             
@@ -218,8 +229,13 @@
     () recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
         accept_message();
         ~strdump(">> INTERNAL START");
-
         var (dc, dd, mm, uf, ma, cp) = load_data();
+        slice msg_slice = in_msg_full.begin_parse();
+        int flags = msg_slice~load_uint(4);
+        slice sender = msg_slice~load_msg_addr();
+        
+
+        
 
         ;; Теперь in_msg_body — это уже body (cs)
         slice cs = in_msg_body;
@@ -230,6 +246,7 @@
             ~dump(op);
 
             if (op == op_create_deal) {
+                require_moderator(sender, ma);
                 int query_id = cs~load_uint(64);
                 slice s = cs~load_msg_addr();
                 slice b = cs~load_msg_addr();

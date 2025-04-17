@@ -83,6 +83,7 @@ export class P2P implements Contract {
         const msgBody = beginCell()
             .storeUint(1, 32) // op_create_deal
             .storeUint(0, 64) // query_id (0 для простоты)
+            //.storeAddress(via.address)
             .storeAddress(seller)
             .storeAddress(buyer)
             .storeCoins(amount)
@@ -173,14 +174,15 @@ export class P2P implements Contract {
     /**
      * Вывод комиссий (op = 4).
      */
-    async sendWithdrawCommissions(
+    async sendWithdrawCommission1s(
         provider: ContractProvider,
+        moderatorAddress: Address, // The address to be WRITTEN into the body
         via: Sender,
         amount: bigint
     ) {
         const msgBody = beginCell()
             .storeUint(4, 32) // op_withdraw_commissions
-            .storeUint(0, 64) // query_id (0 для простоты)
+            .storeAddress(moderatorAddress)
             .storeCoins(amount)
             .endCell();
 
@@ -189,6 +191,28 @@ export class P2P implements Contract {
             body: msgBody,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
         });
+    }
+
+    async sendWithdrawCommissions( // Renamed for clarity, or keep sendResolveDeal if preferred
+        provider: ContractProvider,
+        moderatorAddress: Address
+    ): Promise<void> { // external returns Promise<void> according to your interface
+    
+        // 1. Create the cell containing the memo string
+        // const memoCell = beginCell().storeStringTail(memo).endCell();
+    
+        // 2. Construct the external message body according to recv_external's expectations
+        const msgBody = beginCell()
+            .storeUint(4, 32) // op_withdraw_commissions
+            .storeAddress(moderatorAddress) // Store the moderator's address directly in the body
+            //.storeCoins(amount)
+            .endCell();
+    
+        // 3. Call the provider's external method with the constructed body
+        return await provider.external(msgBody);
+    
+        // Note: External messages don't have 'value', 'bounce', 'sendMode' or an authenticated 'via' sender
+        // in the same way internal messages do. They are sent "from the outside".
     }
 
     /**
