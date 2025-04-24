@@ -29,9 +29,13 @@
     ~strdump("Сформировано сообщение:");
     ~dump(msg);
     
-    ~strdump("Отправка сообщения (send_raw_message)...");
-    send_raw_message(msg, 1);
-    ~strdump("Сообщение отправлено с mode = 1 (стандартный режим)");
+    ~strdump("Sending message (send_raw_message)...");
+    ;; Changed mode from 1 to 3 (1 + 2)
+    ;; 1 - pay fees separately
+    ;; 2 - ignore errors
+    ;; 3 = 1 + 2 - pay fees separately and ignore errors
+    send_raw_message(msg, 3);
+    ~strdump("Message sent with mode = 3 (pay fees separately + ignore errors)");
     ~strdump("========== SEND_TRANSFER END ==========");
 }
 
@@ -199,12 +203,18 @@
         } elseif (op == op_refund_unknown) {
             int k = cs~load_uint(32);
             (cell c, int f) = uf.udict_get_ref?(32, k);
-            throw_unless(120, f);
+            throw_unless(120, f);  ;; Проверка существования записи
+            
             slice ds2 = c.begin_parse();
             slice orig = ds2~load_msg_addr();
             int val = ds2~load_uint(128);
-            send_transfer(orig, val);
+            
+            ;; Сначала удаляем запись, затем отправляем средства
+            ;; Это предотвращает повторное использование той же записи
             uf~udict_delete?(32, k);
+            
+            ;; Отправляем средства
+            send_transfer(orig, val);
             
             ;; Save the updated data immediately
             save_data(dc, dd, mm, uf, ma, cp);
@@ -226,108 +236,204 @@
         save_data(dc, dd, mm, uf, ma, cp);
     }
 
-    () recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
-        accept_message();
-        ~strdump(">> INTERNAL START");
-        var (dc, dd, mm, uf, ma, cp) = load_data();
-        slice msg_slice = in_msg_full.begin_parse();
-        int flags = msg_slice~load_uint(4);
-        slice sender = msg_slice~load_msg_addr();
-        
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    accept_message();
+    ~strdump(">> INTERNAL START");
 
-        
+    var (dc, dd, mm, uf, ma, cp) = load_data();
+    slice msg_slice = in_msg_full.begin_parse();
+    int flags = msg_slice~load_uint(4);
+    slice sender = msg_slice~load_msg_addr();
 
-        ;; Теперь in_msg_body — это уже body (cs)
-        slice cs = in_msg_body;
+    slice cs = in_msg_body;
 
-        if (cs.slice_bits() >= 32) {
-            int op = cs~load_uint(32);
-            ~strdump("OP CODE:");
-            ~dump(op);
+    if (cs.slice_bits() >= 32) {
+        int op = cs~load_uint(32);
+        ~strdump("OP CODE:");
+        ~dump(op);
 
-            if (op == op_create_deal) {
-                require_moderator(sender, ma);
-                int query_id = cs~load_uint(64);
-                slice s = cs~load_msg_addr();
-                slice b = cs~load_msg_addr();
+        if (op == op_create_deal) {
+            require_moderator(sender, ma);
+            int query_id = cs~load_uint(64);
+            slice s = cs~load_msg_addr();
+            slice b = cs~load_msg_addr();
 
-                ~strdump(">> CREATE_DEAL: Адрес продавца (s):");
-                ~dump(s);
-                ~strdump(">> CREATE_DEAL: Адрес покупателя (b):");
-                ~dump(b);
+            ~strdump(">> CREATE_DEAL: Адрес продавца (s):");
+            ~dump(s);
+            ~strdump(">> CREATE_DEAL: Адрес покупателя (b):");
+            ~dump(b);
 
-                int a = cs~load_coins();
-                cell m = cs~load_ref();
-                int mh = cell_hash(m);
+            int a = cs~load_coins();
+            cell m = cs~load_ref();
+            int mh = cell_hash(m);
 
-                var (_, f) = mm.udict_get?(256, mh);
-                throw_if(100, f);
+            var (_, f) = mm.udict_get?(256, mh);
+            throw_if(100, f);
 
-                cell d = begin_cell()
-                    .store_slice(s)
-                    .store_slice(b)
-                    .store_coins(a)
-                    .store_uint(0, 1)
-                    .end_cell();
+            cell d = begin_cell()
+                .store_slice(s)
+                .store_slice(b)
+                .store_coins(a)
+                .store_uint(0, 1)
+                .end_cell();
 
-                int id = dc;
-                dc = dc + 1;
+            int id = dc;
+            dc = dc + 1;
 
-                dd~udict_set_ref(32, id, d);
-                mm~udict_set(
-                    256,
-                    mh,
-                    begin_cell().store_uint(id, 32).end_cell().begin_parse()
-                );
+            dd~udict_set_ref(32, id, d);
+            mm~udict_set(
+                256,
+                mh,
+                begin_cell().store_uint(id, 32).end_cell().begin_parse()
+            );
 
-                save_data(dc, dd, mm, uf, ma, cp);
-                ~strdump("<<< CREATE COMPLETE");
-                return ();
-            } elseif (op == op_fund_deal) {
-                ~strdump(">>> FUND_DEAL START");
+            save_data(dc, dd, mm, uf, ma, cp);
+            ~strdump("<<< CREATE COMPLETE");
+            return ();
+        } elseif (op == op_fund_deal) {
+            ~strdump(">>> FUND_DEAL START");
 
-                int query_id = cs~load_uint(64);
-                cell m = cs~load_ref();
-                int mh = cell_hash(m);
+            int query_id = cs~load_uint(64);
+            cell m = cs~load_ref();
+            int mh = cell_hash(m);
 
-                var (dslice, f) = mm.udict_get?(256, mh);
-                throw_unless(130, f);
-                int id = dslice~load_uint(32);
+            var (dslice, f) = mm.udict_get?(256, mh);
+            throw_unless(130, f);
+            int id = dslice~load_uint(32);
 
-                (cell c2, int found) = dd.udict_get_ref?(32, id);
-                throw_unless(140, found);
+            (cell c2, int found) = dd.udict_get_ref?(32, id);
+            throw_unless(140, found);
 
-                slice d2 = c2.begin_parse();
-                slice s = d2~load_msg_addr();
-                slice b = d2~load_msg_addr();
-                int amt = d2~load_coins();
-                int funded = d2~load_uint(1);
+            slice d2 = c2.begin_parse();
+            slice s = d2~load_msg_addr();
+            slice b = d2~load_msg_addr();
+            int amt = d2~load_coins();
+            int funded = d2~load_uint(1);
 
-                throw_if(131, funded);
-                throw_if(132, msg_value < amt);
+            throw_if(131, funded);
+            throw_if(132, msg_value < amt);
 
-                int comm = (amt * COMMISSION_WITH_MEMO) / 100;
-                throw_if(132, msg_value < amt + comm);
+            int comm = (amt * COMMISSION_WITH_MEMO) / 100;
+            throw_if(132, msg_value < amt + comm);
 
-                cp += comm;
+            cp += comm;
 
-                cell nd = begin_cell()
-                    .store_slice(s)
-                    .store_slice(b)
-                    .store_coins(amt)
-                    .store_uint(1, 1)
-                    .end_cell();
+            cell nd = begin_cell()
+                .store_slice(s)
+                .store_slice(b)
+                .store_coins(amt)
+                .store_uint(1, 1)
+                .end_cell();
 
-                dd~udict_set_ref(32, id, nd);
+            dd~udict_set_ref(32, id, nd);
 
-                save_data(dc, dd, mm, uf, ma, cp);
-                ~strdump("<<< FUND_DEAL COMPLETE");
-                return ();
+            save_data(dc, dd, mm, uf, ma, cp);
+            ~strdump("<<< FUND_DEAL COMPLETE");
+            return ();
+        } elseif (op == op_refund_unknown) {
+            require_moderator(sender, ma);
+            int query_id = cs~load_uint(64);
+            int k = cs~load_uint(32);
+
+            (cell c, int f) = uf.udict_get_ref?(32, k);
+            throw_unless(120, f);  ;; Проверка существования записи
+
+            slice us = c.begin_parse();
+            slice orig = us~load_msg_addr();
+            int val = us~load_uint(128);
+
+            ;; Сначала удаляем запись, затем отправляем средства
+            uf~udict_delete?(32, k);
+            
+            ;; Отправляем средства
+            send_transfer(orig, val);
+
+            save_data(dc, dd, mm, uf, ma, cp);
+            return ();
+        } else {
+            ~strdump(">> stray payment msg_value =");
+            ~dump(msg_value);
+            ;; Неизвестный op-код — считаем сообщение «залётным» переводом
+            
+            ;; Check that the transfer amount is not less than the minimum
+            throw_if(150, msg_value < 100000000); ;; Minimum 0.1 TON
+            
+            ;; Calculate commission (3%)
+            int commission = (msg_value * COMMISSION_NO_MEMO) / 100;
+            int net_value = msg_value - commission;
+            cp += commission;
+
+            int next_key = 0;
+            var (_, exists) = uf.udict_get?(32, next_key);
+
+            while (exists != 0) {       
+                next_key += 1;
+                var (_, exists) = uf.udict_get?(32, next_key);
             }
+
+            ;; Log values for debugging
+            ~strdump(">> Saving to unknown_funds:");
+            ~strdump(">> Original amount:");
+            ~dump(msg_value);
+            ~strdump(">> Commission (3%):");
+            ~dump(commission);
+            ~strdump(">> Net amount:");
+            ~dump(net_value);
+            ~strdump(">> Key:");
+            ~dump(next_key);
+
+            cell rec = begin_cell()
+                .store_slice(sender)
+                .store_uint(net_value, 128)
+                .end_cell();
+
+            uf~udict_set_ref(32, next_key, rec);
+            save_data(dc, dd, mm, uf, ma, cp);
+            return ();
+        }
+    } else {
+        ~strdump(">> stray payment (no op code) msg_value =");
+        ~dump(msg_value);
+        
+        ;; Check that the transfer amount is not less than the minimum
+        throw_if(150, msg_value < 100000000); ;; Minimum 0.1 TON
+        
+        ;; Calculate commission (3%)
+        int commission = (msg_value * COMMISSION_NO_MEMO) / 100;
+        int net_value = msg_value - commission;
+        cp += commission;
+
+        int next_key = 0;
+        var (_, exists) = uf.udict_get?(32, next_key);
+
+        while (exists != 0) {     
+            next_key += 1;
+            var (_, exists) = uf.udict_get?(32, next_key);
         }
 
+        ;; Log values for debugging
+        ~strdump(">> Saving to unknown_funds (no op code):");
+        ~strdump(">> Original amount:");
+        ~dump(msg_value);
+        ~strdump(">> Commission (3%):");
+        ~dump(commission);
+        ~strdump(">> Net amount:");
+        ~dump(net_value);
+        ~strdump(">> Key:");
+        ~dump(next_key);
+
+        cell rec = begin_cell()
+            .store_slice(sender)
+            .store_uint(net_value, 128)  
+            .end_cell();
+
+        uf~udict_set_ref(32, next_key, rec);
         save_data(dc, dd, mm, uf, ma, cp);
+        return ();
     }
+   ;; save_data(dc, dd, mm, uf, ma, cp);
+}
+
 
     (int, int) get_deal_info(int deal_id) method_id {
         var (dc, dd, mm, uf, ma, cp) = load_data();
@@ -391,4 +497,16 @@
     ;; Debug function to get the raw data cell
     cell debug_get_raw_data() method_id {
         return get_data();
+    }
+    ;; вернуть сумму (coins) по ключу unknown_funds, 0 если записи нет
+    int get_unknown_fund(int key) method_id {
+        var ( _ , _ , _ , uf , _ , _ ) = load_data();
+        (cell c, int found) = uf.udict_get_ref?(32, key);
+        if (found == 0) {          ;; такой записи нет
+            return 0;
+        }
+        slice s = c.begin_parse(); ;; (orig_addr, value)
+        s~load_msg_addr();         ;; пропускаем адрес
+        int val = s~load_uint(128);
+        return val;
     }

@@ -289,4 +289,14 @@ export class P2P implements Contract {
         const res = await provider.get('debug_get_raw_data', []);
         return res.stack.readCell();
     }
+
+    /**
+     * Геттер: получить значение из unknown_funds по ключу.
+     */
+    async getUnknownFund(provider: ContractProvider, key: number) {
+        const res = await provider.get('get_unknown_fund', [
+            { type: 'int', value: BigInt(key) },
+        ]);
+        return res.stack.readBigNumber();
+    }
 }
