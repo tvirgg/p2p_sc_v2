@@ -520,9 +520,97 @@ describe("P2P Contract Sandbox", () => {
  */
 
 describe("P2P – refund unknown funds (correct check)", () => {
+    let blockchain: Blockchain; // Инициализация переменной для эмуляции блокчейна
+    let contract: SandboxContract<P2P>; // Переменная для контракта P2P
+    let moderator: SandboxContract<TreasuryContract>; // Переменная для кошелька модератора
+
+    beforeEach(async () => {
+        blockchain = await Blockchain.create(); // Создание новой эмуляции блокчейна
+        moderator  = await blockchain.treasury("moderator"); // Создание кошелька модератора
+
+        const code = await compile("P2P"); // Компиляция кода контракта P2P
+        const cfg  = P2P.createFromConfig(moderator.address, code, 0); // Создание конфигурации контракта с адресом модератора
+
+        contract = blockchain.openContract(cfg); // Открытие контракта в эмуляции блокчейна
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05")); // Деплой контракта с отправкой 0.05 TON от модератора
+    });
+
+    it("stores stray payment and throws on second refund", async () => {
+        // -------- 1. Отправляем «залётный» платёж --------------
+        const stranger = await blockchain.treasury("stranger"); // Создание кошелька для "постороннего" пользователя
+        const deposit  = toNano("1"); // Определение суммы депозита в 1 TON
+
+        const memoCell = beginCell().storeStringTail("ghost-memo").endCell(); // Создание ячейки с текстом "ghost-memo"
+        const body     = beginCell().storeRef(memoCell).endCell(); // Создание тела сообщения с ссылкой на memoCell
+
+        await stranger.send({
+            to:   contract.address, // Адрес получателя — адрес контракта
+            value: deposit, // Сумма перевода
+            bounce: true, // Включение bounce-флага
+            sendMode: 1, // Режим отправки: оплата комиссии отдельно
+            body // Тело сообщения
+        });
+
+        const commission  = deposit * 3n / 100n; // Расчёт комиссии в 3%
+        const expectedNet = deposit - commission; // Расчёт ожидаемой суммы после вычета комиссии
+
+        const stored = await contract.getUnknownFund(0); // Получение сохранённой суммы по ключу 0
+        expect(stored).toBe(expectedNet); // Проверка, что сохранённая сумма соответствует ожидаемой
+
+        // -------- 2. Первый возврат средств -----------------------------
+        const balBefore = await stranger.getBalance(); // Получение баланса "постороннего" до возврата
+
+        await contract.sendRefundUnknown(
+            moderator.getSender(), // Отправитель — модератор
+            /* key = */ 0 // Ключ для возврата средств
+        );
+
+        // Проверка, что запись удалена
+        const storedAfter = await contract.getUnknownFund(0); // Получение суммы по ключу после возврата
+        expect(storedAfter).toBe(0n); // Ожидается, что сумма равна 0
+
+        // Проверка, что баланс увеличился примерно на ожидаемую сумму (с учётом возможных комиссий)
+        const balAfter = await stranger.getBalance(); // Получение баланса после возврата
+        expect(balAfter - balBefore).toBeGreaterThanOrEqual(expectedNet - toNano("0.05")); // Проверка увеличения баланса
+
+        // -------- 3. Повторный возврат должен завершиться ошибкой ------------
+        const tx = await contract.sendRefundUnknown(
+            moderator.getSender(), // Отправитель — модератор
+            /* key = */ 0 // Тот же ключ, что и ранее
+        );
+
+        // ❶ Проверка, что транзакция завершилась с ошибкой
+        expect(tx.transactions).toHaveTransaction({
+            to:      contract.address, // Адрес получателя — адрес контракта
+            success: false, // Ожидается, что транзакция неуспешна
+            exitCode: 120 // Ожидаемый код выхода — 120 (ошибка)
+        });
+
+        // ❷ Проверка, что запись по-прежнему отсутствует
+        const stillZero = await contract.getUnknownFund(0); // Получение суммы по ключу после повторного возврата
+        expect(stillZero).toBe(0n); // Ожидается, что сумма равна 0
+            // -------- 4. Модератор выводит комиссию -------------
+    const modBalBefore = await moderator.getBalance(); // Баланс модератора до вывода
+
+    await contract.sendWithdrawCommissions(
+        moderator.address // ← здесь вместо getSender
+    );
+
+    const modBalAfter = await moderator.getBalance(); // Баланс модератора после вывода
+
+    // Проверка, что баланс увеличился на сумму комиссии (с учётом возможных комиссий)
+    expect(modBalAfter - modBalBefore).toBeGreaterThanOrEqual(commission - toNano("0.05")); // Допускаем небольшое отклонение на комиссии
+
+    // Проверка, что пул комиссий обнулён
+    const contractData = await contract.getContractData();
+    const poolAfter = contractData.commissionsPool;
+    expect(poolAfter).toBe(0);
+    });
+});
+describe("P2P – refund unknown funds (random memo)", () => {
     let blockchain: Blockchain;
-    let contract: SandboxContract<P2P>;
     let moderator: SandboxContract<TreasuryContract>;
+    let contract: SandboxContract<P2P>;
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
@@ -530,25 +618,26 @@ describe("P2P – refund unknown funds (correct check)", () => {
 
         const code = await compile("P2P");
         const cfg  = P2P.createFromConfig(moderator.address, code, 0);
+        contract   = blockchain.openContract(cfg);
 
-        contract = blockchain.openContract(cfg);
         await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
     });
 
-    it("stores stray payment and throws on second refund", async () => {
-        /* -------- 1. отправляем «залётный» платёж -------------- */
+    it("handles unknown memo correctly", async () => {
+        // ---------- 1. «Залётный» перевод с RANDOM-memo -------------
         const stranger = await blockchain.treasury("stranger");
-        const deposit  = toNano("1");                // 1 TON
+        const deposit  = toNano("1");
 
-        const memoCell = beginCell().storeStringTail("ghost-memo").endCell();
-        const body     = beginCell().storeRef(memoCell).endCell();
+        const randomMemo = `unknown-memo-${Math.floor(Math.random() * 1e6)}`;
+        const memoCell   = beginCell().storeStringTail(randomMemo).endCell();
+        const body       = beginCell().storeRef(memoCell).endCell();
 
         await stranger.send({
-            to:   contract.address,
-            value: deposit,
-            bounce: true,
-            sendMode: 1,          // PAY_GAS_SEPARATELY
-            body
+            to:       contract.address,
+            value:    deposit,
+            bounce:   true,
+            sendMode: 1,            // pay fees separately
+            body,
         });
 
         const commission  = deposit * 3n / 100n;
@@ -557,36 +646,424 @@ describe("P2P – refund unknown funds (correct check)", () => {
         const stored = await contract.getUnknownFund(0);
         expect(stored).toBe(expectedNet);
 
-        /* -------- 2. первый refund ----------------------------- */
+        // ---------- 2. Первый возврат -------------------------------
         const balBefore = await stranger.getBalance();
 
         await contract.sendRefundUnknown(
             moderator.getSender(),
-            /* key = */ 0
+            /* key */ 0,
         );
 
-        // запись должна исчезнуть
         const storedAfter = await contract.getUnknownFund(0);
         expect(storedAfter).toBe(0n);
 
-        // баланс должен вырасти примерно на expectedNet (допустимы комиссии)
         const balAfter = await stranger.getBalance();
         expect(balAfter - balBefore).toBeGreaterThanOrEqual(expectedNet - toNano("0.05"));
-        /* -------- 3. повторный refund должен упасть ------------ */
+
+        // ---------- 3. Повторный возврат → ошибка -------------------
         const tx = await contract.sendRefundUnknown(
             moderator.getSender(),
-            /* key = */ 0
+            /* key */ 0,
         );
 
-        // ❶ Транзакция дошла до контракта
         expect(tx.transactions).toHaveTransaction({
-            to:      contract.address,
-            success: false,          // ← смарт-контракт выбросил throw
-            exitCode: 120            // ← тот самый throw_unless(120,…)
+            to:       contract.address,
+            success:  false,
+            exitCode: 120,
         });
 
-        // ❷ запись по-прежнему отсутствует
-        const stillZero = await contract.getUnknownFund(0);
-        expect(stillZero).toBe(0n);
+        // ---------- 4. Вывод комиссий модератором -------------------
+        const modBalBefore = await moderator.getBalance();
+
+        await contract.sendWithdrawCommissions(moderator.address);
+
+        const modBalAfter = await moderator.getBalance();
+        expect(modBalAfter - modBalBefore).toBeGreaterThanOrEqual(commission - toNano("0.05"));
+
+        const { commissionsPool } = await contract.getContractData();
+        expect(commissionsPool).toBe(0);
     });
+});
+const COMMISSION_RATE = 3n;           // 3 %
+const DEAL_AMOUNTS = [ "0.5", "0.8", "1", "1.2", "0.7" ];   // TON
+const N = DEAL_AMOUNTS.length;
+
+describe("P2P – массовое накопление комиссий", () => {
+    let blockchain: Blockchain;
+    let moderator: SandboxContract<TreasuryContract>;
+    let seller:    SandboxContract<TreasuryContract>;
+    let buyer:     SandboxContract<TreasuryContract>;
+    let contract:  SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        blockchain = await Blockchain.create();
+
+        moderator = await blockchain.treasury("moderator");
+        seller    = await blockchain.treasury("seller");
+        buyer     = await blockchain.treasury("buyer");
+
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code);
+        contract   = blockchain.openContract(cfg);
+
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    it("commissionsPool equals Σ(amount)×3 %", async () => {
+        let expectedCommission = 0n;
+
+        for (let i = 0; i < N; i++) {
+            const amt   = toNano(DEAL_AMOUNTS[i]);        // сумма сделки
+            const memo  = `bulk-test-${i}`;               // уникальный memo
+            const extra = toNano("0.1");                  // небольшой запас
+
+            // ① create_deal (от модератора)
+            await contract.sendCreateDeal(
+                moderator.getSender(),
+                seller.address,
+                buyer.address,
+                amt,
+                memo
+            );
+
+            // ② fund_deal  (от покупателя)
+            await contract.sendFundDeal(
+                buyer.getSender(),
+                memo,
+                amt + extra
+            );
+
+            // накапливаем ожидаемую комиссию
+            expectedCommission += (amt * COMMISSION_RATE) / 100n;
+        }
+
+        // Читаем данные контракта
+        const { commissionsPool } = await contract.getContractData();
+
+        // commissionsPool приходит как JS-number, преобразуем к bigint
+        const poolBig = BigInt(commissionsPool);
+
+        expect(poolBig).toBe(expectedCommission);
+    });
+});
+describe("P2P – минимальная сумма 1 nanoTON", () => {
+    let blockchain: Blockchain;
+    let moderator: SandboxContract<TreasuryContract>;
+    let seller:    SandboxContract<TreasuryContract>;
+    let buyer:     SandboxContract<TreasuryContract>;
+    let contract:  SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        blockchain = await Blockchain.create();
+
+        moderator = await blockchain.treasury("moderator");
+        seller    = await blockchain.treasury("seller");
+        buyer     = await blockchain.treasury("buyer");
+
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code);
+        contract   = blockchain.openContract(cfg);
+
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    it("creates & funds a deal on 1 nanoTON with zero commission", async () => {
+        const amountNano = 1n;             // 1 nanoTON
+        const memo       = "min-test";
+
+        /* 1️⃣ create_deal */
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            amountNano,
+            memo
+        );
+
+        /* 2️⃣ fund_deal  – 0.03 TON достаточно и для msg + gas */
+        const fundTx = await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            toNano("0.03")
+        );
+
+        expect(fundTx.transactions).toHaveTransaction({
+            from:    buyer.address,
+            to:      contract.address,
+            success: true,
+            op:      5,
+        });
+
+        /* 3️⃣ Проверяем funded-флаг и комиссию */
+        const info = await contract.getDealInfo(0);
+        expect(info.amount).toBe(amountNano);
+        expect(info.funded).toBe(1);
+
+        const { commissionsPool } = await contract.getContractData();
+        expect(BigInt(commissionsPool)).toBe(0n);
+    });
+});
+describe("P2P – негативные сценарии", () => {
+    let bc:         Blockchain;
+    let moderator:  SandboxContract<TreasuryContract>;
+    let stranger:   SandboxContract<TreasuryContract>;
+    let seller:     SandboxContract<TreasuryContract>;
+    let buyer:      SandboxContract<TreasuryContract>;
+    let contract:   SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+        stranger  = await bc.treasury("stranger");
+        seller    = await bc.treasury("seller");
+        buyer     = await bc.treasury("buyer");
+
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code);
+        contract   = bc.openContract(cfg);
+
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    test("CreateDeal от не-модератора ⇒ exit 999, стейт не меняется", async () => {
+        const amount = toNano("1");
+        const memo   = "no-mod";
+
+        const tx = await contract.sendCreateDeal(
+            stranger.getSender(),        // <-- НЕ модератор
+            seller.address,
+            buyer.address,
+            amount,
+            memo
+        );
+
+        /* 1️⃣ транзакция откатилась */
+        expect(tx.transactions).toHaveTransaction({
+            from:    stranger.address,
+            to:      contract.address,
+            success: false,
+            exitCode: 999
+        });
+
+        /* 2️⃣ в блокчейне ничего не изменилось */
+        const { dealCounter, commissionsPool } = await contract.getContractData();
+        expect(dealCounter).toBe(0);          // ни одной сделки
+        expect(commissionsPool).toBe(0);      // пул комиссий пуст
+    });
+
+    test("FundDeal < amount+commission ⇒ exit 132, счётчики без изменений", async () => {
+        const amount = toNano("2");     // 2 TON
+        const memo   = "need-2.06";
+
+        /* ① модератор создаёт сделку */
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            amount,
+            memo
+        );
+
+        /* ② покупатель ПЫТАЕТСЯ профинансировать меньше 2 TON + 3 % */
+        const insufficient = toNano("2.03");  // нужно ≈ 2.06 TON
+
+        const tx = await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            insufficient
+        );
+
+        expect(tx.transactions).toHaveTransaction({
+            from:    buyer.address,
+            to:      contract.address,
+            success: false,
+            exitCode: 132
+        });
+
+        /* ③ funded-флаг всё ещё 0, комиссий нет */
+        const info = await contract.getDealInfo(0);
+        expect(info.funded).toBe(0);
+
+        const { commissionsPool } = await contract.getContractData();
+        expect(commissionsPool).toBe(0);
+    });
+});
+describe("P2P – повторные Fund / преждевременный и неверный Resolve", () => {
+    let bc:         Blockchain;
+    let moderator:  SandboxContract<TreasuryContract>;
+    let seller:     SandboxContract<TreasuryContract>;
+    let buyer:      SandboxContract<TreasuryContract>;
+    let contract:   SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+        seller    = await bc.treasury("seller");
+        buyer     = await bc.treasury("buyer");
+
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code);
+        contract   = bc.openContract(cfg);
+
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    test("Повторный FundDeal ⇒ 1-й успех, 2-й exit 131", async () => {
+        const amt  = toNano("2");
+        const memo = "double-fund";
+
+        /* ① CREATE  */
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            amt,
+            memo
+        );
+
+        /* ② Первый FUND — нормальная сумма (amt+3 %) */
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            toNano("2.1")
+        );
+
+        /* пул после первого финансирования */
+        const dataAfterFirst = await contract.getContractData();
+        const pool1 = BigInt(dataAfterFirst.commissionsPool);
+
+        /* ③ Второй FUND той же сделки → exit 131 */
+        const tx = await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            toNano("2.1")
+        );
+
+        expect(tx.transactions).toHaveTransaction({
+            from:   buyer.address,
+            to:     contract.address,
+            success:false,
+            exitCode:131
+        });
+
+        /* funded-флаг остался 1, комиссионный пул не изменился */
+        const info = await contract.getDealInfo(0);
+        expect(info.funded).toBe(1);
+
+        const dataAfterSecond = await contract.getContractData();
+        expect(BigInt(dataAfterSecond.commissionsPool)).toBe(pool1);
+    });
+
+    test("ResolveDeal ДО FundDeal ⇒ exit 111, funded=0", async () => {
+        const amt  = toNano("1");
+        const memo = "resolve-too-early";
+
+        /* ① CREATE  (без funding) */
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            amt,
+            memo
+        );
+
+        /* ② Пытаемся resolve в пользу seller */
+        const tx = await contract.sendResolveDealExternal(
+            moderator.address,
+            memo,
+            true
+        );
+
+        expect(tx.transactions).toHaveTransaction({
+            to:       contract.address,
+            success:  false,
+            exitCode: 111
+        });
+
+        /* funded-флаг всё ещё 0 */
+        const info = await contract.getDealInfo(0);
+        expect(info.funded).toBe(0);
+    });
+
+    test("ResolveDeal с несуществующим memo ⇒ throw, state intact", async () => {
+        const fakeMemo = "ghost-memo";
+    
+        /* ① external-вызов: ожидаем общий Error */
+        await expect(
+            contract.sendResolveDealExternal(
+                moderator.address,
+                fakeMemo,
+                true
+            )
+        ).rejects.toThrow();
+    
+        /* ② убеждаемся, что внутреннее состояние не изменилось */
+        const { dealCounter, commissionsPool } = await contract.getContractData();
+        expect(dealCounter).toBe(0);
+        expect(commissionsPool).toBe(0);
+    });    
+});
+describe("P2P – пустой пул комиссий и неправильный op", () => {
+    let bc:         Blockchain;
+    let moderator:  SandboxContract<TreasuryContract>;
+    let contract:   SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code);
+        contract   = bc.openContract(cfg);
+
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    /* ──────────────────────────────────────────────────────────────── */
+/* tests/P2P.test.ts--фрагмент
+ * блок: «P2P – пустой пул комиссий и неправильный op»
+ * ────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────────────
+ *  P2P – пустой пул комиссий и неправильный op
+ * ──────────────────────────────────────────────────────────────── */
+describe("P2P – пустой пул комиссий и неправильный op", () => {
+    let bc:         Blockchain;
+    let moderator:  SandboxContract<TreasuryContract>;
+    let contract:   SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code);
+        contract   = bc.openContract(cfg);
+
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    /* ────────────────────── 1. withdraw при pool = 0 ───────────────────── */
+    test("WithdrawCommissions при pool=0 → баланс модератора не меняется", async () => {
+        // пул действительно пуст
+        const { commissionsPool: pool0 } = await contract.getContractData();
+        expect(pool0).toBe(0);
+    
+        const bal0 = await moderator.getBalance();
+    
+        /* внешний withdraw: контракт пытается отправить 0 TON,
+           внутри срабатывает throw(160) → Promise REJECTED            */
+        await expect(
+            contract.sendWithdrawCommissions(moderator.address)
+        ).rejects.toThrow();                       // ← главное изменение
+    
+        /* после не-успешной транзакции состояние не изменилось */
+        const bal1 = await moderator.getBalance();
+        expect(bal1).toBe(bal0);                  // денег не прибавилось
+    
+        const { commissionsPool: pool1 } = await contract.getContractData();
+        expect(pool1).toBe(0);                    // пул остался нулём
+    });
+});
+
+
 });

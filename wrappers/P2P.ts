@@ -299,4 +299,5 @@ export class P2P implements Contract {
         ]);
         return res.stack.readBigNumber();
     }
+
 }
