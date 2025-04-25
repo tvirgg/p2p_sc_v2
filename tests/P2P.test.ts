@@ -519,160 +519,74 @@ describe("P2P Contract Sandbox", () => {
  * Проверяет: залётный платёж → комиссия → возврат остатка
  */
 
-describe("P2P – refund unknown funds", () => {
+describe("P2P – refund unknown funds (correct check)", () => {
     let blockchain: Blockchain;
     let contract: SandboxContract<P2P>;
-    let moderatorWallet: SandboxContract<TreasuryContract>;
+    let moderator: SandboxContract<TreasuryContract>;
 
-    /* ──────────────────────────────────────────────────────────────────── *
-     *  ❶ Стартуем Sandbox и разворачиваем P2P c кошельком-модератором     *
-     * ──────────────────────────────────────────────────────────────────── */
     beforeEach(async () => {
         blockchain = await Blockchain.create();
-        blockchain.verbosity = {
-            blockchainLogs: false,
-            vmLogs: "vm_logs",
-            debugLogs: true,
-            print: false,
-        };
+        moderator  = await blockchain.treasury("moderator");
 
-        moderatorWallet = await blockchain.treasury("moderator");
+        const code = await compile("P2P");
+        const cfg  = P2P.createFromConfig(moderator.address, code, 0);
 
-        const code   = await compile("P2P");
-        const p2pCfg = P2P.createFromConfig(moderatorWallet.address, code, 0);
-
-        contract = blockchain.openContract(p2pCfg);
-        await contract.sendDeploy(moderatorWallet.getSender(), toNano("0.05"));
+        contract = blockchain.openContract(cfg);
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
     });
 
-    /* ──────────────────────────────────────────────────────────────────── *
-     *  ❷ Проверяем: залётный платёж → комиссия → возврат остатка          *
-     * ──────────────────────────────────────────────────────────────────── */
-    it("stores a stray payment in unknown_funds and refunds it back", async () => {
-
-        /* === 2.1 «Залётный» перевод от незнакомца ====================== */
-
+    it("stores stray payment and throws on second refund", async () => {
+        /* -------- 1. отправляем «залётный» платёж -------------- */
         const stranger = await blockchain.treasury("stranger");
-        const deposit  = toNano("1");               // 1 TON
+        const deposit  = toNano("1");                // 1 TON
+
         const memoCell = beginCell().storeStringTail("ghost-memo").endCell();
         const body     = beginCell().storeRef(memoCell).endCell();
-
-        const balStrangerBefore = await stranger.getBalance();
-        process.stdout.write(`💳 Stranger before send: ${balStrangerBefore}\n`);
 
         await stranger.send({
             to:   contract.address,
             value: deposit,
             bounce: true,
-            body,
-            /* ВАЖНО: газ списываем ОТДЕЛЬНО, иначе до контракта долетит
-               меньше 1 TON и проверка упадёт                           */
-               sendMode: 1,          // вместо SendMode.PAY_GAS_SEPARATELY
+            sendMode: 1,          // PAY_GAS_SEPARATELY
+            body
         });
 
-        process.stdout.write("💸 Stray deposit sent\n");
+        const commission  = deposit * 3n / 100n;
+        const expectedNet = deposit - commission;
 
-        /* === 2.2 Проверяем unknown_funds =============================== */
+        const stored = await contract.getUnknownFund(0);
+        expect(stored).toBe(expectedNet);
 
-        // Get the actual value stored in unknown_funds
-        const uf0 = await contract.getUnknownFund(0);
-        process.stdout.write(`🔍 unknown_funds[0] = ${uf0}\n`);
-        
-        // Calculate expected value (3% commission)
-        const expectedCommission = deposit * 3n / 100n;
-        const expectedNet = deposit - expectedCommission;
-        process.stdout.write(`💰 Deposit: ${deposit}\n`);
-        process.stdout.write(`💸 Expected commission (3%): ${expectedCommission}\n`);
-        process.stdout.write(`💵 Expected net: ${expectedNet}\n`);
-        
-        // Now we expect the correct value after fixing the contract
-        // The value should be the deposit minus the 3% commission
-        expect(uf0).toBe(expectedNet);
+        /* -------- 2. первый refund ----------------------------- */
+        const balBefore = await stranger.getBalance();
 
-        /* === 2.3 Модератор делает refund =============================== */
-
-        const balBeforeRefund = await stranger.getBalance();
-        process.stdout.write(`💰 Stranger balance BEFORE refund: ${balBeforeRefund}\n`);
-
-        // Print debug info about the unknown fund before refund
-        const ufBefore = await contract.getUnknownFund(0);
-        process.stdout.write(`🔍 Unknown fund BEFORE refund: ${ufBefore}\n`);
-
-        // Get contract data before refund
-        const contractDataBefore = await contract.getContractData();
-        process.stdout.write(`📊 Contract data BEFORE refund: ${JSON.stringify(contractDataBefore, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n`);
-
-        const refundTx = await contract.sendRefundUnknown(
-            moderatorWallet.getSender(),
+        await contract.sendRefundUnknown(
+            moderator.getSender(),
             /* key = */ 0
         );
 
-        // Print debug logs from the refund transaction
-        if (refundTx && Array.isArray(refundTx.transactions) && refundTx.transactions.length > 0) {
-            const firstTransaction = refundTx.transactions[0];
-            if ('debugLogs' in firstTransaction && firstTransaction.debugLogs) {
-                const debugLogs = firstTransaction.debugLogs.split('\n');
-                debugLogs.forEach((logLine) => {
-                    process.stdout.write(`📋 Refund Debug Log: ${logLine}\n`);
-                });
-            }
-        }
+        // запись должна исчезнуть
+        const storedAfter = await contract.getUnknownFund(0);
+        expect(storedAfter).toBe(0n);
 
-        expect(refundTx.transactions).toHaveTransaction({
-            from: moderatorWallet.address,
-            to:   contract.address,
-            op:   3,
-            success: true,
+        // баланс должен вырасти примерно на expectedNet (допустимы комиссии)
+        const balAfter = await stranger.getBalance();
+        expect(balAfter - balBefore).toBeGreaterThanOrEqual(expectedNet - toNano("0.05"));
+        /* -------- 3. повторный refund должен упасть ------------ */
+        const tx = await contract.sendRefundUnknown(
+            moderator.getSender(),
+            /* key = */ 0
+        );
+
+        // ❶ Транзакция дошла до контракта
+        expect(tx.transactions).toHaveTransaction({
+            to:      contract.address,
+            success: false,          // ← смарт-контракт выбросил throw
+            exitCode: 120            // ← тот самый throw_unless(120,…)
         });
-        process.stdout.write("🔄 Refund executed\n");
 
-        /* === 2.4 Запись удалена, деньги вернулись ====================== */
-
-        const ufAfter = await contract.getUnknownFund(0);
-        process.stdout.write(`🔍 Unknown fund AFTER refund: ${ufAfter}\n`);
-        expect(ufAfter).toBe(0n);
-
-        // Get contract data after refund
-        const contractDataAfter = await contract.getContractData();
-        process.stdout.write(`📊 Contract data AFTER refund: ${JSON.stringify(contractDataAfter, (key, value) => typeof value === 'bigint' ? value.toString() : value)}\n`);
-
-        const balAfterRefund = await stranger.getBalance();
-        process.stdout.write(`💰 Stranger balance AFTER refund: ${balAfterRefund}\n`);
-        const delta = balAfterRefund - balBeforeRefund;
-        process.stdout.write(`📈 Balance delta: ${delta}\n`);
-
-        // Now we expect the balance to increase after the refund
-        process.stdout.write(`💵 Expected minimum refund: ${expectedNet - toNano("0.02")}\n`);
-        
-        // Check that the unknown fund entry is removed
-        expect(ufAfter).toBe(0n);
-        
-        // Check that the balance increased by approximately the expected net amount
-        // Allow for some gas fees
-        expect(delta).toBeGreaterThan(expectedNet - toNano("0.05"));
-
-        /* === 2.5 Повторный вызов с тем же ключом ======================= */
-        
-        // The contract should now throw an exception when trying to refund a non-existent entry
-        // We'll use try/catch to handle the expected exception
-        try {
-            await contract.sendRefundUnknown(
-                moderatorWallet.getSender(),
-                /* key = */ 0
-            );
-            // If we get here, the test should fail because an exception was expected
-            process.stdout.write("❌ Second refund did not throw an exception as expected\n");
-            expect(false).toBe(true); // Force test to fail
-        } catch (error) {
-            // This is expected behavior - the contract should throw an exception
-            process.stdout.write(`✅ Second refund correctly threw an exception: ${error}\n`);
-        }
-        
-        // Verify the unknown fund is still 0
-        const ufAfterSecondRefund = await contract.getUnknownFund(0);
-        process.stdout.write(`🔍 Unknown fund AFTER second refund attempt: ${ufAfterSecondRefund}\n`);
-        expect(ufAfterSecondRefund).toBe(0n);
-        
-        process.stdout.write("✅ Second refund completed\n");
+        // ❷ запись по-прежнему отсутствует
+        const stillZero = await contract.getUnknownFund(0);
+        expect(stillZero).toBe(0n);
     });
 });
