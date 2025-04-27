@@ -14,33 +14,50 @@ const int COMMISSION_PERCENT = 3;  ;; 3% commission for all deals
 const int MIN_CREATE_FEE = 3000000;      ;; 0.03 TON deposit for deal creation
 const int MIN_CP_FOR_ADMIN = 3000000;    ;; 0.03 TON minimum in pool for admin operations
 const int CP_RESERVE_GAS = 500000000;    ;; 0.5 TON reserve in commission pool
+const int UF_MAX_RECORDS = 10000;        ;; Maximum number of records in unknown_funds dictionary
 
 ;; Helper function to check if two slices are equal
 int equal_slice_bits(slice a, slice b) asm "SDEQ";
 
 ;; Helper function to add to unknown funds
-cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
-    int next_key = 0;
-    var (_, exists) = uf.udict_get?(32, next_key);
-
-    while (exists != 0) {     
-        next_key += 1;
-        var (_, exists) = uf.udict_get?(32, next_key);
+(cell, int, cell) add_to_unknown_funds(cell uf, slice sender, int amount, int next_uf_key, cell uf_free_stack) impure inline {
+    int key = next_uf_key;
+    int stack_empty = 1;
+    
+    ;; Try to get a key from the free stack first
+    (int free_key, _, int found) = uf_free_stack.udict_get_min?(32);
+    if (found) {
+        key = free_key;
+        ;;  в add_to_unknown_funds
+        (uf_free_stack, _) = uf_free_stack.udict_delete?(32, free_key);
+        stack_empty = 0;
+        
+        ~strdump(">> Reusing key from free stack:");
+        ~dump(key);
+    } else {
+        ;; No free keys, use next_uf_key
+        throw_if(152, next_uf_key >= UF_MAX_RECORDS);
+        
+        ~strdump(">> Using next_uf_key:");
+        ~dump(next_uf_key);
+        
+        ;; Increment next_uf_key for next time
+        next_uf_key += 1;
     }
 
     ~strdump(">> Adding to unknown_funds:");
     ~strdump(">> Amount:");
     ~dump(amount);
     ~strdump(">> Key:");
-    ~dump(next_key);
+    ~dump(key);
 
     cell rec = begin_cell()
         .store_slice(sender)
         .store_uint(amount, 128)  
         .end_cell();
 
-    uf~udict_set_ref(32, next_key, rec);
-    return uf;
+    uf~udict_set_ref(32, key, rec);
+    return (uf, next_uf_key, uf_free_stack);
 }
 
 ;; Function to send TON to an address
@@ -83,14 +100,14 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
 }
 
 ;; Load contract data from storage
-(int, cell, cell, cell, slice, int) load_data() impure {
+(int, cell, cell, cell, slice, int, int, cell) load_data() impure {
     cell data = get_data();
     if (cell_null?(data)) {
-        return (0, new_dict(), new_dict(), new_dict(), null(), 0);
+        return (0, new_dict(), new_dict(), new_dict(), null(), 0, 0, new_dict());
     }
     slice ds = data.begin_parse();
     if (slice_empty?(ds)) {
-        return (0, new_dict(), new_dict(), new_dict(), null(), 0);
+        return (0, new_dict(), new_dict(), new_dict(), null(), 0, 0, new_dict());
     }
     int deals_counter = ds~load_uint(32);
     cell deals_dict = ds~load_dict();
@@ -108,11 +125,21 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
         commissions_pool = ds~load_uint(128);
     }
     
-    return (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool);
+    int next_uf_key = 0;
+    if (~ ds.slice_empty?()) {
+        next_uf_key = ds~load_uint(32);
+    }
+    
+    cell uf_free_stack = new_dict();
+    if (~ ds.slice_empty?()) {
+        uf_free_stack = ds~load_dict();
+    }
+    
+    return (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool, next_uf_key, uf_free_stack);
 }
 
 ;; Save contract data to storage
-() save_data(int dc, cell dd, cell mm, cell uf, slice ma, int cp) impure {
+() save_data(int dc, cell dd, cell mm, cell uf, slice ma, int cp, int next_uf_key, cell uf_free_stack) impure {
     ;; Explicitly create the cell with all data
     cell data_cell = begin_cell()
             .store_uint(dc, 32)  ;; Store deal counter
@@ -120,7 +147,9 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
             .store_dict(mm)      ;; Store memo map
             .store_dict(uf)      ;; Store unknown funds
             .store_slice(ma)     ;; Store moderator address
-            .store_uint(cp, 128)     ;; стало: места хватит ~3,4e29 nanoTON
+            .store_uint(cp, 128) ;; стало: места хватит ~3,4e29 nanoTON
+            .store_uint(next_uf_key, 32) ;; Store next unknown funds key
+            .store_dict(uf_free_stack) ;; Store free keys stack
         .end_cell();
     
     ;; Set the data cell as the persistent storage
@@ -138,7 +167,7 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
     accept_message();
     ~strdump(">> INTERNAL START");
 
-    var (dc, dd, mm, uf, ma, cp) = load_data();
+    var (dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack) = load_data();
     slice msg_slice = in_msg_full.begin_parse();
     int flags = msg_slice~load_uint(4);
     slice sender = msg_slice~load_msg_addr();
@@ -160,8 +189,8 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
         cp += fee;
         
         ;; Store net value in unknown funds
-        uf = add_to_unknown_funds(uf, sender, net_value);
-        save_data(dc, dd, mm, uf, ma, cp);
+        (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, net_value, next_uf_key, uf_free_stack);
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
@@ -211,7 +240,7 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
             begin_cell().store_uint(id, 32).end_cell().begin_parse()
         );
 
-        save_data(dc, dd, mm, uf, ma, cp);
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         ~strdump("<<< CREATE COMPLETE");
         return ();
     }
@@ -251,7 +280,7 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
             ~strdump(">> Overpayment detected:");
             ~dump(overpay);
             
-            uf = add_to_unknown_funds(uf, sender, overpay);
+            (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, overpay, next_uf_key, uf_free_stack);
         }
 
         ;; Update deal as funded
@@ -264,7 +293,7 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
 
         dd~udict_set_ref(32, id, nd);
 
-        save_data(dc, dd, mm, uf, ma, cp);
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         ~strdump("<<< FUND_DEAL COMPLETE");
         return ();
     }
@@ -316,7 +345,7 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
         dd~udict_delete?(32, id);
         mm~udict_delete?(256, mh);
         
-        save_data(dc, dd, mm, uf, ma, cp);
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
@@ -339,13 +368,20 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
         slice orig = us~load_msg_addr();  ;; original sender
         int val = us~load_uint(128);      ;; value
         
-        ;; Delete record first, then send funds
-        uf~udict_delete?(32, k);
+        ;; Delete record first
+        (uf, _) = uf.udict_delete?(32, k);
+        
+        ;; Add the freed key to the stack
+        uf_free_stack = uf_free_stack.udict_set(
+                    32,
+                    k,
+                    begin_cell().store_uint(k, 32).end_cell().begin_parse()
+                );
         
         ;; Send funds back to original sender
         send_transfer(orig, val);
         
-        save_data(dc, dd, mm, uf, ma, cp);
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
@@ -367,7 +403,7 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
             cp = CP_RESERVE_GAS;  ;; Keep reserve in pool
         }
         
-        save_data(dc, dd, mm, uf, ma, cp);
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
@@ -386,14 +422,14 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
     cp += fee;
     
     ;; Store net value in unknown funds
-    uf = add_to_unknown_funds(uf, sender, net_value);
-    save_data(dc, dd, mm, uf, ma, cp);
+    (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, net_value, next_uf_key, uf_free_stack);
+    save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
     return ();
 }
 
 ;; Get deal info by ID
 (int, int) get_deal_info(int deal_id) method_id {
-    var (dc, dd, mm, uf, ma, cp) = load_data();
+    var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
         ~strdump("NOT FOUND");
@@ -412,13 +448,13 @@ cell add_to_unknown_funds(cell uf, slice sender, int amount) impure inline {
 
 ;; Get deal counter
 int get_deal_counter() method_id {
-    var (dc, dd, mm, uf, ma, cp) = load_data();
+    var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     return dc;
 }
 
 ;; Debug function to dump a deal
 (slice, slice, int, int) debug_get_deal(int deal_id) method_id {
-    var (dc, dd, mm, uf, ma, cp) = load_data();
+    var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
         return (null(), null(), 0, 0);
@@ -435,19 +471,42 @@ int get_deal_counter() method_id {
 
 ;; Debug function to get the moderator address
 slice get_moderator() method_id {
-    var (dc, dd, mm, uf, ma, cp) = load_data();
+    var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     return ma;
 }
 
 ;; Debug function to dump all contract data
-(int, int, slice) debug_get_contract_data() method_id {
-    var (dc, dd, mm, uf, ma, cp) = load_data();
-    return (dc, cp, ma);
+(int, int, slice, int, int, int) debug_get_contract_data() method_id {
+    var (dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack) = load_data();
+    
+    ;; Count live unknown funds entries
+    int uf_live_count = 0;
+    cell uf_copy = uf;
+    (_, _, int uf_has_items) = uf_copy.udict_get_min?(32);
+    while (uf_has_items) {
+        uf_live_count += 1;
+        (int key, _, _) = uf_copy.udict_get_min?(32);
+        (uf_copy, _) = uf_copy.udict_delete?(32, key);
+        (_, _, uf_has_items) = uf_copy.udict_get_min?(32);
+    }
+    
+    ;; Count free stack entries
+    int uf_free_count = 0;
+    cell uf_free_stack_copy = uf_free_stack;
+    (_, _, int free_has_items) = uf_free_stack_copy.udict_get_min?(32);
+    while (free_has_items) {
+        uf_free_count += 1;
+        (int key, _, _) = uf_free_stack_copy.udict_get_min?(32);
+        (uf_free_stack_copy, _) = uf_free_stack_copy.udict_delete?(32, key);
+        (_, _, free_has_items) = uf_free_stack_copy.udict_get_min?(32);
+    }
+    
+    return (dc, cp, ma, next_uf_key, uf_live_count, uf_free_count);
 }
 
 ;; Debug function to check if a deal exists
 int debug_deal_exists(int deal_id) method_id {
-    var (dc, dd, mm, uf, ma, cp) = load_data();
+    var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (_, int found) = dd.udict_get_ref?(32, deal_id);
     return found;
 }
@@ -459,7 +518,7 @@ cell debug_get_raw_data() method_id {
 
 ;; Get unknown fund amount by key, 0 if not found
 int get_unknown_fund(int key) method_id {
-    var (_, _, _, uf, _, _) = load_data();
+    var (_, _, _, uf, _, _, _, _) = load_data();
     (cell c, int found) = uf.udict_get_ref?(32, key);
     if (found == 0) {
         return 0;
@@ -472,6 +531,6 @@ int get_unknown_fund(int key) method_id {
 
 ;; Get commission pool amount
 int get_commission_pool() method_id {
-    var (_, _, _, _, _, cp) = load_data();
+    var (_, _, _, _, _, cp, _, _) = load_data();
     return cp;
 }

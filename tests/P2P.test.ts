@@ -3,7 +3,6 @@ import { compile } from "@ton-community/blueprint";
 import { Blockchain, SandboxContract, TreasuryContract } from "@ton-community/sandbox";
 import { P2P } from "../wrappers/P2P";
 import '@ton-community/test-utils';
-
 // Define constants from the contract
 const COMMISSION_WITH_MEMO = 3; // 3% commission for deals with memo
 
@@ -953,5 +952,125 @@ describe("P2P – вывод комиссий (reserve 0.5 TON)", () => {
         const margin = toNano("0.07");
         expect(BigInt(await moderator.getBalance()) - BigInt(bal0))
             .toBeGreaterThanOrEqual(before - CP_RESERVE_GAS - margin);
+    });
+});
+/*──────────────────── 7. Unknown Funds > UF_MAX_RECORDS  ────────────────────*/
+describe("P2P – UF_MAX_RECORDS overflow", () => {
+    let bc: Blockchain,
+        moderator: SandboxContract<TreasuryContract>,
+        spammer:   SandboxContract<TreasuryContract>,
+        contract:  SandboxContract<P2P>;
+
+    // ❶ Поднимем chain и деплоим контракт
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+        spammer   = await bc.treasury("spammer", { balance: toNano("4000") });
+
+        const code = await compile("P2P");
+        contract   = bc.openContract(P2P.createFromConfig(moderator.address, code));
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    /** UF_MAX_RECORDS = 10 000 ⇒ 10 001-й платёж должен упасть с exit 152 */
+    it("> UF_MAX_RECORDS ⇒ exit 152", async () => {
+        const UF_MAX = 10_000;                 // см. константу в P2P.fc
+        const deposit = toNano("0.2");         // 0.2 TON: маленький, но >0.1 TON
+
+        // ❷ «Забиваем» unknown_funds до лимита
+        for (let i = 0; i < UF_MAX; i++) {
+            await spammer.send({
+                to:       contract.address,
+                value:    deposit,
+                bounce:   true,
+                sendMode: 1,                   // pay fees separately
+            });
+        }
+
+        // ❸ 10 001-й платёж – ждём throw(152)
+        const trace = await spammer.send({
+            to:       contract.address,
+            value:    deposit,
+            bounce:   true,
+            sendMode: 1,
+        });
+
+        expect(trace.transactions).toHaveTransaction({
+            to:       contract.address,
+            success:  false,
+            exitCode: 152,                    // UF_MAX_RECORDS overflow
+        });
+
+        // ❹ Убедимся, что счётчик больше не растёт
+        const lastKey = await contract.getUnknownFund(UF_MAX /* 10 000 */);
+        expect(lastKey).toBe(0n);             // записи нет
+    }, 300_000);  // ⏱ увеличим таймаут – 10 001 tx ≈ 3-4 с
+});
+
+
+describe('P2P – Micro-gas контроль', () => {
+    let bc: Blockchain,
+        moderator: SandboxContract<TreasuryContract>,
+        sender:     SandboxContract<TreasuryContract>,
+        contract:   SandboxContract<P2P>;
+
+    /* ── bootstrap ── */
+    beforeEach(async () => {
+        bc = await Blockchain.create();
+        bc.verbosity = {
+            blockchainLogs: true,
+            vmLogs:  'vm_logs_full',
+            debugLogs: true,
+            print:  false,
+        };
+
+        moderator = await bc.treasury('moderator');
+        sender    = await bc.treasury('gas-tester', { balance: toNano('10') });
+
+        const code = await compile('P2P');
+        contract   = bc.openContract(P2P.createFromConfig(moderator.address, code));
+        await contract.sendDeploy(moderator.getSender(), toNano('0.05'));
+    });
+
+    it('stray-payment gas usage ≤ 3500', async () => {
+        /* 1. «Залётный» внутренний перевод без body */
+        const value = toNano('0.2');            // > 0.1 TON min
+        const trace = await sender.send({
+            to:       contract.address,
+            value,
+            bounce:   true,
+            sendMode: 1,                       // pay fees separately
+        });
+
+        /* 2. Ищем успешную транзакцию контракта */
+        const contractAddr = contract.address.toString();    // канонический вид
+        const contractTx = trace.transactions.find((tx: any) => {
+            const addrString: string | undefined =
+                // старый формат: строка в поле address
+                (typeof tx.address === 'string' ? tx.address : undefined) ||
+                // если address = Address
+                (tx.address?.toString?.())                     ||
+                // generic-tx  ─ dest в inbound-message
+                (tx.inMessage?.info?.dest?.toString?.())       ||
+                // generic-tx  ─ поле description.on
+                (tx.description?.type === 'generic'
+                    ? tx.description.on?.toString?.()
+                    : undefined);
+
+            return addrString === contractAddr && tx.success === true;
+        });
+
+        if (!contractTx) {
+            throw new Error('Tx of contract not found in trace');
+        }
+
+        /* 3. Извлекаем gas (SDK ≥0.25 → totalGasUsed,  <0.25 → gasUsed) */
+        const gasUsed: number =
+              (contractTx as any).totalGasUsed   // новые версии SDK
+           ?? (contractTx as any).gasUsed        // старые версии
+           ?? 0;
+
+        process.stdout.write(`💨 gasUsed = ${gasUsed}\n`);
+        expect(gasUsed).toBeLessThanOrEqual(3500);
     });
 });

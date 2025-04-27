@@ -252,7 +252,17 @@ export class P2P implements Contract {
         const dealCounter = res.stack.readNumber();
         const commissionsPool = res.stack.readNumber();
         const moderatorAddress = res.stack.readAddress();
-        return { dealCounter, commissionsPool, moderatorAddress };
+        const nextUfKey = res.stack.readNumber();
+        const ufLiveCount = res.stack.readNumber();
+        const ufFreeCount = res.stack.readNumber();
+        return { 
+            dealCounter, 
+            commissionsPool, 
+            moderatorAddress, 
+            nextUfKey, 
+            ufLiveCount, 
+            ufFreeCount 
+        };
     }
 
     /**
