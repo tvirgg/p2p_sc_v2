@@ -1,55 +1,32 @@
 #include "imports/stdlib.fc";
 
-;; Operation codes
 const int op_create_deal = 1;
 const int op_resolve_deal = 2;
 const int op_refund_unknown = 3;
 const int op_withdraw_commissions = 4;
 const int op_fund_deal = 5;
 
-;; Commission percentages
-const int COMMISSION_PERCENT = 3;  ;; 3% commission for all deals
+const int COMMISSION_PERCENT = 3;
+const int MIN_CREATE_FEE = 3000000;
+const int MIN_CP_FOR_ADMIN = 3000000;
+const int CP_RESERVE_GAS = 500000000;
+const int UF_MAX_RECORDS = 10000;
 
-;; Constants for anti-spam, gas management, and commission
-const int MIN_CREATE_FEE = 3000000;      ;; 0.03 TON deposit for deal creation
-const int MIN_CP_FOR_ADMIN = 3000000;    ;; 0.03 TON minimum in pool for admin operations
-const int CP_RESERVE_GAS = 500000000;    ;; 0.5 TON reserve in commission pool
-const int UF_MAX_RECORDS = 10000;        ;; Maximum number of records in unknown_funds dictionary
-
-;; Helper function to check if two slices are equal
 int equal_slice_bits(slice a, slice b) asm "SDEQ";
 
-;; Helper function to add to unknown funds
 (cell, int, cell) add_to_unknown_funds(cell uf, slice sender, int amount, int next_uf_key, cell uf_free_stack) impure inline {
     int key = next_uf_key;
     int stack_empty = 1;
     
-    ;; Try to get a key from the free stack first
     (int free_key, _, int found) = uf_free_stack.udict_get_min?(32);
     if (found) {
         key = free_key;
-        ;;  в add_to_unknown_funds
         (uf_free_stack, _) = uf_free_stack.udict_delete?(32, free_key);
         stack_empty = 0;
-        
-        ~strdump(">> Reusing key from free stack:");
-        ~dump(key);
     } else {
-        ;; No free keys, use next_uf_key
         throw_if(152, next_uf_key >= UF_MAX_RECORDS);
-        
-        ~strdump(">> Using next_uf_key:");
-        ~dump(next_uf_key);
-        
-        ;; Increment next_uf_key for next time
         next_uf_key += 1;
     }
-
-    ~strdump(">> Adding to unknown_funds:");
-    ~strdump(">> Amount:");
-    ~dump(amount);
-    ~strdump(">> Key:");
-    ~dump(key);
 
     cell rec = begin_cell()
         .store_slice(sender)
@@ -60,46 +37,22 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
     return (uf, next_uf_key, uf_free_stack);
 }
 
-;; Function to send TON to an address
 () send_transfer(slice dest, int grams) impure inline {
-    ~strdump("========== SEND_TRANSFER START ==========");
-    ~strdump("Отправка средств получателю");
-    ~strdump("Адрес получателя (dest):");
-    ~dump(dest);
-    ~strdump("Сумма перевода (grams):");
-    ~dump(grams);
-    
-    ;; Simple coin transfer, basic variant
     var msg = begin_cell()
-        .store_uint(0x18, 6)             ;; 0x18 = 011000 (bouncing internal message)
-        .store_slice(dest)               ;; destination address
-        .store_coins(grams)              ;; amount to transfer
-        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1) ;; empty body (no initialize bit + body)
+        .store_uint(0x18, 6)
+        .store_slice(dest)
+        .store_coins(grams)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         .end_cell();
-
-    ~strdump("Сформировано сообщение:");
-    ~dump(msg);
-    
-    ~strdump("Sending message (send_raw_message)...");
-    ;; Mode 3 = pay fees separately (1) + ignore errors (2)
     send_raw_message(msg, 3);
-    ~strdump("Message sent with mode = 3 (pay fees separately + ignore errors)");
-    ~strdump("========== SEND_TRANSFER END ==========");
 }
 
-;; Check if sender is the moderator
 () require_moderator(slice sender, slice moderator_address) impure inline {
-    ~strdump(">> REQUIRE_MODERATOR CALL");
-    ~dump(moderator_address);
-    ~dump(sender);
     if (equal_slice_bits(sender, moderator_address) == 0) {
-        ~strdump(">> ACCESS FORBIDDEN");
-        ~dump(sender);
         throw(999);
     }
 }
 
-;; Load contract data from storage
 (int, cell, cell, cell, slice, int, int, cell) load_data() impure {
     cell data = get_data();
     if (cell_null?(data)) {
@@ -115,7 +68,6 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
     cell unknown_funds = ds~load_dict();
     slice moderator_address = null();
     
-    ;; Always try to load moderator address if we have data
     if (~ ds.slice_empty?()) {
         moderator_address = ds~load_msg_addr();
     }
@@ -138,102 +90,70 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
     return (deals_counter, deals_dict, memo_map, unknown_funds, moderator_address, commissions_pool, next_uf_key, uf_free_stack);
 }
 
-;; Save contract data to storage
 () save_data(int dc, cell dd, cell mm, cell uf, slice ma, int cp, int next_uf_key, cell uf_free_stack) impure {
-    ;; Explicitly create the cell with all data
     cell data_cell = begin_cell()
-            .store_uint(dc, 32)  ;; Store deal counter
-            .store_dict(dd)      ;; Store deals dictionary
-            .store_dict(mm)      ;; Store memo map
-            .store_dict(uf)      ;; Store unknown funds
-            .store_slice(ma)     ;; Store moderator address
-            .store_uint(cp, 128) ;; стало: места хватит ~3,4e29 nanoTON
-            .store_uint(next_uf_key, 32) ;; Store next unknown funds key
-            .store_dict(uf_free_stack) ;; Store free keys stack
+            .store_uint(dc, 32)
+            .store_dict(dd)
+            .store_dict(mm)
+            .store_dict(uf)
+            .store_slice(ma)
+            .store_uint(cp, 128)
+            .store_uint(next_uf_key, 32)
+            .store_dict(uf_free_stack)
         .end_cell();
-    
-    ;; Set the data cell as the persistent storage
     set_data(data_cell);
 }
 
-;; Block external messages
 () recv_external(slice _) impure {
-    ;; All logic is in internal messages
     throw(998);
 }
 
-;; Process internal messages
 () recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
     accept_message();
-    ~strdump(">> INTERNAL START");
 
     var (dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack) = load_data();
     slice msg_slice = in_msg_full.begin_parse();
     int flags = msg_slice~load_uint(4);
     slice sender = msg_slice~load_msg_addr();
-
     slice cs = in_msg_body;
 
     if (cs.slice_bits() < 32) {
-        ~strdump(">> stray payment (no op code) msg_value =");
-        ~dump(msg_value);
-        
-        ;; Check that the transfer amount is not less than the minimum
-        throw_if(150, msg_value < 100000000); ;; Minimum 0.1 TON
-        
-        ;; Calculate commission (3% of amount)
+        throw_if(150, msg_value < 100000000);
         int fee = (msg_value * COMMISSION_PERCENT) / 100;
         int net_value = msg_value - fee;
-        
-        ;; Add commission to pool
         cp += fee;
-        
-        ;; Store net value in unknown funds
         (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, net_value, next_uf_key, uf_free_stack);
         save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
     int op = cs~load_uint(32);
-    ~strdump("OP CODE:");
-    ~dump(op);
 
-    ;; op_create_deal - any user can create a deal with MIN_CREATE_FEE
     if (op == op_create_deal) {
-        ;; Anti-spam deposit check
         throw_if(301, msg_value < MIN_CREATE_FEE);
-        cp += MIN_CREATE_FEE;  ;; Add deposit to commission pool
+        cp += MIN_CREATE_FEE;
         
         int query_id = cs~load_uint(64);
-        slice s = cs~load_msg_addr();  ;; seller
-        slice b = cs~load_msg_addr();  ;; buyer
-
-        ~strdump(">> CREATE_DEAL: Адрес продавца (s):");
-        ~dump(s);
-        ~strdump(">> CREATE_DEAL: Адрес покупателя (b):");
-        ~dump(b);
-
-        int a = cs~load_coins();  ;; amount
-        cell m = cs~load_ref();   ;; memo
+        slice s = cs~load_msg_addr();
+        slice b = cs~load_msg_addr();
+        int a = cs~load_coins();
+        cell m = cs~load_ref();
         int mh = cell_hash(m);
 
-        ;; Check if memo already exists
         var (_, f) = mm.udict_get?(256, mh);
         throw_if(100, f);
 
-        ;; Create deal record (funded = 0, funded_amount = 0)
         cell d = begin_cell()
             .store_slice(s)
             .store_slice(b)
             .store_coins(a)
             .store_uint(0, 1)
-            .store_coins(0)  ;; funded_amount = 0
+            .store_coins(0)
             .end_cell();
 
         int id = dc;
         dc = dc + 1;
 
-        ;; Store deal and memo mapping
         dd~udict_set_ref(32, id, d);
         mm~udict_set(
             256,
@@ -242,292 +162,207 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
         );
 
         save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
-        ~strdump("<<< CREATE COMPLETE");
         return ();
     }
 
-    ;; op_fund_deal - buyer funds the deal with exactly the amount or more
-    if (op == op_fund_deal) {
-        ~strdump(">>> FUND_DEAL START");
-
-        int query_id = cs~load_uint(64);
-        cell m = cs~load_ref();
-        int mh = cell_hash(m);
-
-        ;; Find deal by memo hash
-        var (dslice, f) = mm.udict_get?(256, mh);
-        throw_unless(130, f);
-        int id = dslice~load_uint(32);
-
-        ;; Get deal details
-        (cell c2, int found) = dd.udict_get_ref?(32, id);
-        throw_unless(140, found);
-
-        slice d2 = c2.begin_parse();
-        slice s = d2~load_msg_addr();  ;; seller
-        slice b = d2~load_msg_addr();  ;; buyer
-        int amt = d2~load_coins();     ;; amount
-        int funded = d2~load_uint(1);  ;; funded status
-
-        ;; Check deal is not already funded
-        throw_if(131, funded);
-        
-        ;; Load funded_amount if it exists in the deal structure
-        int funded_amount = 0;
-        if (~ d2.slice_empty?()) {
-            funded_amount = d2~load_coins();
-        }
-        
-        ~strdump(">> Current funded_amount:");
-        ~dump(funded_amount);
-        ~strdump(">> New payment amount:");
-        ~dump(msg_value);
-        
-        ;; Add new payment to funded_amount
-        funded_amount += msg_value;
-        ~strdump(">> New total funded_amount:");
-        ~dump(funded_amount);
-        
-        ;; Check if deal is now fully funded
-        int new_funded = 0;
-        int overpay = 0;
-        
-        if (funded_amount >= amt) {
-            ~strdump(">> Deal is now fully funded");
-            new_funded = 1;
-            
-            ;; Calculate overpayment if any
-            overpay = funded_amount - amt;
-            if (overpay > 0) {
-                ~strdump(">> Overpayment detected:");
-                ~dump(overpay);
-                
-                (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, overpay, next_uf_key, uf_free_stack);
-                
-                ;; Adjust funded_amount to exactly match the deal amount
-                funded_amount = amt;
-            }
-        } else {
-            ~strdump(">> Deal is partially funded, waiting for more payments");
-        }
-
-        ;; Update deal with new funded status and funded_amount
-        cell nd = begin_cell()
-            .store_slice(s)
-            .store_slice(b)
-            .store_coins(amt)
-            .store_uint(new_funded, 1)
-            .store_coins(funded_amount)
-            .end_cell();
-
-        dd~udict_set_ref(32, id, nd);
-
-        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
-        ~strdump("<<< FUND_DEAL COMPLETE");
-        return ();
-    }
-
-;; op_resolve_deal - only moderator can resolve, gas from commission pool
-if (op == op_resolve_deal) {
-    ;; Check sender is moderator
-    require_moderator(sender, ma);
-
-    ;; Check commission pool has enough for gas
-    throw_if(401, cp < MIN_CP_FOR_ADMIN);
-
+if (op == op_fund_deal) {
     int query_id = cs~load_uint(64);
     cell m = cs~load_ref();
-    int verdict = cs~load_uint(1);  ;; 1 = to seller, 0 = to buyer
-
     int mh = cell_hash(m);
 
-    ;; Find deal by memo hash
     var (dslice, f) = mm.udict_get?(256, mh);
-    throw_unless(110, f);
+    throw_unless(130, f);
     int id = dslice~load_uint(32);
 
-    ;; Get deal details
-    (cell c, int found) = dd.udict_get_ref?(32, id);
+    (cell c2, int found) = dd.udict_get_ref?(32, id);
     throw_unless(140, found);
 
-    slice d2 = c.begin_parse();
-    slice s = d2~load_msg_addr();  ;; seller
-    slice b = d2~load_msg_addr();  ;; buyer
-    int amt = d2~load_coins();     ;; amount (целевая)
-    int funded = d2~load_uint(1);  ;; funded flag (1 = полностью)
+    slice d2 = c2.begin_parse();
+    slice s = d2~load_msg_addr();
+    slice b = d2~load_msg_addr();
+    int amt = d2~load_coins();
+    int funded = d2~load_uint(1);
 
-    ;; загружаем funded_amount
+    throw_if(131, funded);
+
     int funded_amount = 0;
     if (~ d2.slice_empty?()) {
         funded_amount = d2~load_coins();
     }
 
-    ;; если хотим отправить продавцу
-    if (verdict == 1) {
-        ;; проверяем: сделка должна быть полностью профинансирована
-        throw_unless(111, funded);
+    funded_amount += msg_value;
 
-        ;; Считаем комиссию один раз
-        int fee = (amt * COMMISSION_PERCENT) / 100;
-        cp += fee;
-        send_transfer(s, amt - fee);  ;; 97 % продавцу
-    } else {
-        ;; возврат покупателю: отправляем funded_amount (сколько реально профинансировано)
-        send_transfer(b, funded_amount);
+    int new_funded = 0;
+    int overpay = 0;
+    
+    if (funded_amount >= amt) {
+        new_funded = 1;
+        overpay = funded_amount - amt;
+        if (overpay > 0) {
+            (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, overpay, next_uf_key, uf_free_stack);
+            funded_amount = amt;
+        }
     }
 
-    ;; Clean up deal records
-    dd~udict_delete?(32, id);
-    mm~udict_delete?(256, mh);
+    cell nd = begin_cell()
+        .store_slice(s)
+        .store_slice(b)
+        .store_coins(amt)
+        .store_uint(new_funded, 1)
+        .store_coins(funded_amount)
+        .end_cell();
+
+    dd~udict_set_ref(32, id, nd);
 
     save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
     return ();
 }
 
 
-    ;; op_refund_unknown - only moderator can refund, gas from commission pool
-    if (op == op_refund_unknown) {
-        ;; Check sender is moderator
+    if (op == op_resolve_deal) {
         require_moderator(sender, ma);
-        
-        ;; Check commission pool has enough for gas
         throw_if(401, cp < MIN_CP_FOR_ADMIN);
-        
+
         int query_id = cs~load_uint(64);
-        int k = cs~load_uint(32);  ;; key in unknown funds
-        
-        ;; Get unknown fund record
+        cell m = cs~load_ref();
+        int verdict = cs~load_uint(1);
+
+        int mh = cell_hash(m);
+
+        var (dslice, f) = mm.udict_get?(256, mh);
+        throw_unless(110, f);
+        int id = dslice~load_uint(32);
+
+        (cell c, int found) = dd.udict_get_ref?(32, id);
+        throw_unless(140, found);
+
+        slice d2 = c.begin_parse();
+        slice s = d2~load_msg_addr();
+        slice b = d2~load_msg_addr();
+        int amt = d2~load_coins();
+        int funded = d2~load_uint(1);
+
+        int funded_amount = 0;
+        if (~ d2.slice_empty?()) {
+            funded_amount = d2~load_coins();
+        }
+
+        if (verdict == 1) {
+            throw_unless(111, funded);
+            int fee = (amt * COMMISSION_PERCENT) / 100;
+            cp += fee;
+            send_transfer(s, amt - fee);
+        } else {
+            send_transfer(b, funded_amount);
+        }
+
+        dd~udict_delete?(32, id);
+        mm~udict_delete?(256, mh);
+
+        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
+        return ();
+    }
+
+    if (op == op_refund_unknown) {
+        require_moderator(sender, ma);
+        throw_if(401, cp < MIN_CP_FOR_ADMIN);
+
+        int query_id = cs~load_uint(64);
+        int k = cs~load_uint(32);
+
         (cell c, int f) = uf.udict_get_ref?(32, k);
         throw_unless(120, f);
-        
+
         slice us = c.begin_parse();
-        slice orig = us~load_msg_addr();  ;; original sender
-        int val = us~load_uint(128);      ;; value
-        
-        ;; Delete record first
+        slice orig = us~load_msg_addr();
+        int val = us~load_uint(128);
+
         (uf, _) = uf.udict_delete?(32, k);
-        
-        ;; Add the freed key to the stack
+
         uf_free_stack = uf_free_stack.udict_set(
                     32,
                     k,
                     begin_cell().store_uint(k, 32).end_cell().begin_parse()
                 );
-        
-        ;; Send funds back to original sender
+
         send_transfer(orig, val);
-        
+
         save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
-    ;; op_withdraw_commissions - only moderator can withdraw, gas from commission pool
     if (op == op_withdraw_commissions) {
-        ;; Check sender is moderator
         require_moderator(sender, ma);
-        
-        ;; Check commission pool has enough for gas
         throw_if(401, cp < MIN_CP_FOR_ADMIN);
-        
+
         int query_id = cs~load_uint(64);
-        
-        ;; Calculate payout amount, leaving CP_RESERVE_GAS in the pool
+
         int payout = 0;
         if (cp > CP_RESERVE_GAS) {
             payout = cp - CP_RESERVE_GAS;
             send_transfer(sender, payout);
-            cp = CP_RESERVE_GAS;  ;; Keep reserve in pool
+            cp = CP_RESERVE_GAS;
         }
-        
+
         save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
 
-    ;; Unknown op code - treat as stray payment
-    ~strdump(">> stray payment with unknown op code, msg_value =");
-    ~dump(msg_value);
-    
-    ;; Check that the transfer amount is not less than the minimum
-    throw_if(150, msg_value < 100000000); ;; Minimum 0.1 TON
-    
-    ;; Calculate commission (3% of amount)
+    throw_if(150, msg_value < 100000000);
     int fee = (msg_value * COMMISSION_PERCENT) / 100;
     int net_value = msg_value - fee;
-    
-    ;; Add commission to pool
     cp += fee;
-    
-    ;; Store net value in unknown funds
     (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, net_value, next_uf_key, uf_free_stack);
     save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
-    return ();
 }
-
-;; Get deal info by ID
 (int, int, int) get_deal_info(int deal_id) method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
-        ~strdump("NOT FOUND");
         return (0, 0, 0);
     }
-    ~strdump("FOUND!");
-    
     slice d2 = c.begin_parse();
-    d2~load_msg_addr();  ;; Skip seller address
-    d2~load_msg_addr();  ;; Skip buyer address
-    int amt = d2~load_coins();  ;; Read amount
-    int f = d2~load_uint(1);    ;; Read funded status
-    
-    ;; Try to read funded_amount if it exists
+    d2~load_msg_addr();
+    d2~load_msg_addr();
+    int amt = d2~load_coins();
+    int f = d2~load_uint(1);
     int funded_amount = 0;
     if (~ d2.slice_empty?()) {
         funded_amount = d2~load_coins();
     }
-    
     return (amt, f, funded_amount);
 }
 
-;; Get deal counter
 int get_deal_counter() method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     return dc;
 }
 
-;; Debug function to dump a deal
 (slice, slice, int, int, int) debug_get_deal(int deal_id) method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
         return (null(), null(), 0, 0, 0);
     }
-    
     slice d2 = c.begin_parse();
     slice seller = d2~load_msg_addr();
     slice buyer = d2~load_msg_addr();
     int amt = d2~load_coins();
     int f = d2~load_uint(1);
-    
-    ;; Try to read funded_amount if it exists
     int funded_amount = 0;
     if (~ d2.slice_empty?()) {
         funded_amount = d2~load_coins();
     }
-    
     return (seller, buyer, amt, f, funded_amount);
 }
 
-;; Debug function to get the moderator address
 slice get_moderator() method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     return ma;
 }
 
-;; Debug function to dump all contract data
 (int, int, slice, int, int, int) debug_get_contract_data() method_id {
     var (dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack) = load_data();
-    
-    ;; Count live unknown funds entries
     int uf_live_count = 0;
     cell uf_copy = uf;
     (_, _, int uf_has_items) = uf_copy.udict_get_min?(32);
@@ -537,8 +372,6 @@ slice get_moderator() method_id {
         (uf_copy, _) = uf_copy.udict_delete?(32, key);
         (_, _, uf_has_items) = uf_copy.udict_get_min?(32);
     }
-    
-    ;; Count free stack entries
     int uf_free_count = 0;
     cell uf_free_stack_copy = uf_free_stack;
     (_, _, int free_has_items) = uf_free_stack_copy.udict_get_min?(32);
@@ -548,23 +381,19 @@ slice get_moderator() method_id {
         (uf_free_stack_copy, _) = uf_free_stack_copy.udict_delete?(32, key);
         (_, _, free_has_items) = uf_free_stack_copy.udict_get_min?(32);
     }
-    
     return (dc, cp, ma, next_uf_key, uf_live_count, uf_free_count);
 }
 
-;; Debug function to check if a deal exists
 int debug_deal_exists(int deal_id) method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (_, int found) = dd.udict_get_ref?(32, deal_id);
     return found;
 }
 
-;; Debug function to get the raw data cell
 cell debug_get_raw_data() method_id {
     return get_data();
 }
 
-;; Get unknown fund amount by key, 0 if not found
 int get_unknown_fund(int key) method_id {
     var (_, _, _, uf, _, _, _, _) = load_data();
     (cell c, int found) = uf.udict_get_ref?(32, key);
@@ -572,12 +401,11 @@ int get_unknown_fund(int key) method_id {
         return 0;
     }
     slice s = c.begin_parse();
-    s~load_msg_addr();         ;; Skip address
+    s~load_msg_addr();
     int val = s~load_uint(128);
     return val;
 }
 
-;; Get commission pool amount
 int get_commission_pool() method_id {
     var (_, _, _, _, _, cp, _, _) = load_data();
     return cp;
