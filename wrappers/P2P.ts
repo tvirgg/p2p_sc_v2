@@ -45,6 +45,8 @@ export class P2P implements Contract {
             .storeDict(Dictionary.empty()) // unknown_funds
             .storeAddress(moderator)
             .storeUint(0, 128) // commissions_pool
+            .storeUint(0, 32) // next_uf_key
+            .storeDict(Dictionary.empty()) // uf_free_stack
             .endCell();
 
         const init = { code, data };
@@ -215,7 +217,7 @@ export class P2P implements Contract {
     }
 
     /**
-     * Геттер: получить (amount, funded).
+     * Геттер: получить (amount, funded, funded_amount).
      */
     async getDealInfo(provider: ContractProvider, dealId: number) {
         const res = await provider.get('get_deal_info', [
@@ -224,8 +226,9 @@ export class P2P implements Contract {
 
         const amount = res.stack.readBigNumber();
         const funded = res.stack.readNumber();
+        const fundedAmount = res.stack.readBigNumber();
 
-        return { amount, funded };
+        return { amount, funded, fundedAmount };
     }
 
     /**
@@ -277,8 +280,9 @@ export class P2P implements Contract {
         const buyer = res.stack.readAddress();
         const amount = res.stack.readBigNumber();
         const funded = res.stack.readNumber();
+        const fundedAmount = res.stack.readBigNumber();
         
-        return { seller, buyer, amount, funded };
+        return { seller, buyer, amount, funded, fundedAmount };
     }
 
     /**

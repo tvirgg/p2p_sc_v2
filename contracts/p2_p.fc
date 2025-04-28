@@ -221,12 +221,13 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
         var (_, f) = mm.udict_get?(256, mh);
         throw_if(100, f);
 
-        ;; Create deal record (funded = 0)
+        ;; Create deal record (funded = 0, funded_amount = 0)
         cell d = begin_cell()
             .store_slice(s)
             .store_slice(b)
             .store_coins(a)
             .store_uint(0, 1)
+            .store_coins(0)  ;; funded_amount = 0
             .end_cell();
 
         int id = dc;
@@ -271,24 +272,52 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
         ;; Check deal is not already funded
         throw_if(131, funded);
         
-        ;; Check buyer sent enough funds (at least amt)
-        throw_if(132, msg_value < amt);
-
-        ;; Handle overpayment – целиком кладём в unknown_funds
-        int overpay = msg_value - amt;
-        if (overpay > 0) {
-            ~strdump(">> Overpayment detected:");
-            ~dump(overpay);
+        ;; Load funded_amount if it exists in the deal structure
+        int funded_amount = 0;
+        if (~ d2.slice_empty?()) {
+            funded_amount = d2~load_coins();
+        }
+        
+        ~strdump(">> Current funded_amount:");
+        ~dump(funded_amount);
+        ~strdump(">> New payment amount:");
+        ~dump(msg_value);
+        
+        ;; Add new payment to funded_amount
+        funded_amount += msg_value;
+        ~strdump(">> New total funded_amount:");
+        ~dump(funded_amount);
+        
+        ;; Check if deal is now fully funded
+        int new_funded = 0;
+        int overpay = 0;
+        
+        if (funded_amount >= amt) {
+            ~strdump(">> Deal is now fully funded");
+            new_funded = 1;
             
-            (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, overpay, next_uf_key, uf_free_stack);
+            ;; Calculate overpayment if any
+            overpay = funded_amount - amt;
+            if (overpay > 0) {
+                ~strdump(">> Overpayment detected:");
+                ~dump(overpay);
+                
+                (uf, next_uf_key, uf_free_stack) = add_to_unknown_funds(uf, sender, overpay, next_uf_key, uf_free_stack);
+                
+                ;; Adjust funded_amount to exactly match the deal amount
+                funded_amount = amt;
+            }
+        } else {
+            ~strdump(">> Deal is partially funded, waiting for more payments");
         }
 
-        ;; Update deal as funded
+        ;; Update deal with new funded status and funded_amount
         cell nd = begin_cell()
             .store_slice(s)
             .store_slice(b)
             .store_coins(amt)
-            .store_uint(1, 1)
+            .store_uint(new_funded, 1)
+            .store_coins(funded_amount)
             .end_cell();
 
         dd~udict_set_ref(32, id, nd);
@@ -298,56 +327,63 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
         return ();
     }
 
-    ;; op_resolve_deal - only moderator can resolve, gas from commission pool
-    if (op == op_resolve_deal) {
-        ;; Check sender is moderator
-        require_moderator(sender, ma);
-        
-        ;; Check commission pool has enough for gas
-        throw_if(401, cp < MIN_CP_FOR_ADMIN);
-        
-        int query_id = cs~load_uint(64);
-        cell m = cs~load_ref();
-        int verdict = cs~load_uint(1);  ;; 1 = to seller, 0 = to buyer
-        
-        int mh = cell_hash(m);
-        
-        ;; Find deal by memo hash
-        var (dslice, f) = mm.udict_get?(256, mh);
-        throw_unless(110, f);
-        int id = dslice~load_uint(32);
-        
-        ;; Get deal details
-        (cell c, int found) = dd.udict_get_ref?(32, id);
-        throw_unless(140, found);
-        
-        slice d2 = c.begin_parse();
-        slice s = d2~load_msg_addr();  ;; seller
-        slice b = d2~load_msg_addr();  ;; buyer
-        int amt = d2~load_coins();     ;; amount
-        int funded = d2~load_uint(1);  ;; funded status
-        
-        ;; Check deal is funded
-        throw_unless(111, funded);
-        
-        ;; Transfer funds based on verdict
-        if (verdict == 1) {
-            ;; Считаем комиссию один раз
-            int fee = (amt * COMMISSION_PERCENT) / 100;
-            cp += fee;                 ;; отправляем в пул
-            send_transfer(s, amt - fee);  ;; 97 % продавцу
-        } else {
-            ;; To buyer: full refund
-            send_transfer(b, amt);
-        }
-        
-        ;; Clean up deal records
-        dd~udict_delete?(32, id);
-        mm~udict_delete?(256, mh);
-        
-        save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
-        return ();
+;; op_resolve_deal - only moderator can resolve, gas from commission pool
+if (op == op_resolve_deal) {
+    ;; Check sender is moderator
+    require_moderator(sender, ma);
+
+    ;; Check commission pool has enough for gas
+    throw_if(401, cp < MIN_CP_FOR_ADMIN);
+
+    int query_id = cs~load_uint(64);
+    cell m = cs~load_ref();
+    int verdict = cs~load_uint(1);  ;; 1 = to seller, 0 = to buyer
+
+    int mh = cell_hash(m);
+
+    ;; Find deal by memo hash
+    var (dslice, f) = mm.udict_get?(256, mh);
+    throw_unless(110, f);
+    int id = dslice~load_uint(32);
+
+    ;; Get deal details
+    (cell c, int found) = dd.udict_get_ref?(32, id);
+    throw_unless(140, found);
+
+    slice d2 = c.begin_parse();
+    slice s = d2~load_msg_addr();  ;; seller
+    slice b = d2~load_msg_addr();  ;; buyer
+    int amt = d2~load_coins();     ;; amount (целевая)
+    int funded = d2~load_uint(1);  ;; funded flag (1 = полностью)
+
+    ;; загружаем funded_amount
+    int funded_amount = 0;
+    if (~ d2.slice_empty?()) {
+        funded_amount = d2~load_coins();
     }
+
+    ;; если хотим отправить продавцу
+    if (verdict == 1) {
+        ;; проверяем: сделка должна быть полностью профинансирована
+        throw_unless(111, funded);
+
+        ;; Считаем комиссию один раз
+        int fee = (amt * COMMISSION_PERCENT) / 100;
+        cp += fee;
+        send_transfer(s, amt - fee);  ;; 97 % продавцу
+    } else {
+        ;; возврат покупателю: отправляем funded_amount (сколько реально профинансировано)
+        send_transfer(b, funded_amount);
+    }
+
+    ;; Clean up deal records
+    dd~udict_delete?(32, id);
+    mm~udict_delete?(256, mh);
+
+    save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
+    return ();
+}
+
 
     ;; op_refund_unknown - only moderator can refund, gas from commission pool
     if (op == op_refund_unknown) {
@@ -428,12 +464,12 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
 }
 
 ;; Get deal info by ID
-(int, int) get_deal_info(int deal_id) method_id {
+(int, int, int) get_deal_info(int deal_id) method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
         ~strdump("NOT FOUND");
-        return (0, 0);
+        return (0, 0, 0);
     }
     ~strdump("FOUND!");
     
@@ -443,7 +479,13 @@ int equal_slice_bits(slice a, slice b) asm "SDEQ";
     int amt = d2~load_coins();  ;; Read amount
     int f = d2~load_uint(1);    ;; Read funded status
     
-    return (amt, f);
+    ;; Try to read funded_amount if it exists
+    int funded_amount = 0;
+    if (~ d2.slice_empty?()) {
+        funded_amount = d2~load_coins();
+    }
+    
+    return (amt, f, funded_amount);
 }
 
 ;; Get deal counter
@@ -453,11 +495,11 @@ int get_deal_counter() method_id {
 }
 
 ;; Debug function to dump a deal
-(slice, slice, int, int) debug_get_deal(int deal_id) method_id {
+(slice, slice, int, int, int) debug_get_deal(int deal_id) method_id {
     var (dc, dd, mm, uf, ma, cp, _, _) = load_data();
     (cell c, int found) = dd.udict_get_ref?(32, deal_id);
     if (found == 0) {
-        return (null(), null(), 0, 0);
+        return (null(), null(), 0, 0, 0);
     }
     
     slice d2 = c.begin_parse();
@@ -466,7 +508,13 @@ int get_deal_counter() method_id {
     int amt = d2~load_coins();
     int f = d2~load_uint(1);
     
-    return (seller, buyer, amt, f);
+    ;; Try to read funded_amount if it exists
+    int funded_amount = 0;
+    if (~ d2.slice_empty?()) {
+        funded_amount = d2~load_coins();
+    }
+    
+    return (seller, buyer, amt, f, funded_amount);
 }
 
 ;; Debug function to get the moderator address

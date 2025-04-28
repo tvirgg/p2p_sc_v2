@@ -3,6 +3,7 @@ import { compile } from "@ton-community/blueprint";
 import { Blockchain, SandboxContract, TreasuryContract } from "@ton-community/sandbox";
 import { P2P } from "../wrappers/P2P";
 import '@ton-community/test-utils';
+
 // Define constants from the contract
 const COMMISSION_WITH_MEMO = 3; // 3% commission for deals with memo
 
@@ -809,23 +810,32 @@ describe("P2P – ошибки Fund / Resolve", () => {
         await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
     });
 
-    test("FundDeal < amount ⇒ exit 132", async () => {
+    test("Partial FundDeal is now allowed", async () => {
         const memo = "need-2-ton";
+        const dealAmount = toNano("2");
+        const partialAmount = toNano("1.5");
+        
         await contract.sendCreateDeal(
             moderator.getSender(),
             seller.address,
             buyer.address,
-            toNano("2"),
+            dealAmount,
             memo
         );
 
+        // Partial funding should now succeed
         const tx = await contract.sendFundDeal(
             buyer.getSender(),
             memo,
-            toNano("1.99")
+            partialAmount
         );
 
-        expect(tx.transactions).toHaveTransaction({ success: false, exitCode: 132 });
+        expect(tx.transactions).toHaveTransaction({ success: true });
+        
+        // Verify the deal is partially funded
+        const dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(0); // Not fully funded yet
+        expect(dealInfo.fundedAmount.toString()).toBe(partialAmount.toString());
     });
 
     test("Resolve по несуществующему memo ⇒ exit 401", async () => {
@@ -954,7 +964,7 @@ describe("P2P – вывод комиссий (reserve 0.5 TON)", () => {
             .toBeGreaterThanOrEqual(before - CP_RESERVE_GAS - margin);
     });
 });
-/*──────────────────── 7. Unknown Funds > UF_MAX_RECORDS  ────────────────────*/
+// /*──────────────────── 7. Unknown Funds > UF_MAX_RECORDS  ────────────────────*/
 describe("P2P – UF_MAX_RECORDS overflow", () => {
     let bc: Blockchain,
         moderator: SandboxContract<TreasuryContract>,
@@ -1008,69 +1018,494 @@ describe("P2P – UF_MAX_RECORDS overflow", () => {
 });
 
 
-describe('P2P – Micro-gas контроль', () => {
-    let bc: Blockchain,
-        moderator: SandboxContract<TreasuryContract>,
-        sender:     SandboxContract<TreasuryContract>,
-        contract:   SandboxContract<P2P>;
+import { SendMode } from "ton-core";
 
-    /* ── bootstrap ── */
+// Утилита безопасного stringify
+function safeStringify(obj: any, space = 2) {
+    const seen = new WeakSet();
+    return JSON.stringify(obj, (key, value) => {
+        if (typeof value === 'bigint') {
+            return value.toString();
+        }
+        if (typeof value === 'object' && value !== null) {
+            if (seen.has(value)) {
+                return '[Circular]';
+            }
+            seen.add(value);
+        }
+        return value;
+    }, space);
+}
+
+// Утилита для flatten всех транзакций из trace
+function flattenTransactions(trace: any): any[] {
+    const result: any[] = [];
+    const stack = [trace];
+
+    while (stack.length > 0) {
+        const node = stack.pop();
+        if (node?.transactions) {
+            result.push(...node.transactions);
+        }
+        if (node?.children) {
+            stack.push(...node.children);
+        }
+    }
+
+    return result;
+}
+
+describe("P2P - stray payment gas usage", () => {
+    let blockchain: Blockchain;
+    let contract: SandboxContract<P2P>;
+    let moderator: SandboxContract<TreasuryContract>;
+
     beforeEach(async () => {
-        bc = await Blockchain.create();
-        bc.verbosity = {
-            blockchainLogs: true,
-            vmLogs:  'vm_logs_full',
-            debugLogs: true,
-            print:  false,
-        };
+        blockchain = await Blockchain.create();
+        moderator = await blockchain.treasury("moderator");
 
-        moderator = await bc.treasury('moderator');
-        sender    = await bc.treasury('gas-tester', { balance: toNano('10') });
+        const code = await compile("P2P");
+        const cfg = P2P.createFromConfig(moderator.address, code, 0);
+        contract = blockchain.openContract(cfg);
 
-        const code = await compile('P2P');
-        contract   = bc.openContract(P2P.createFromConfig(moderator.address, code));
-        await contract.sendDeploy(moderator.getSender(), toNano('0.05'));
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
     });
 
     it('stray-payment gas usage ≤ 3500', async () => {
-        /* 1. «Залётный» внутренний перевод без body */
-        const value = toNano('0.2');            // > 0.1 TON min
+        const sender = await blockchain.treasury("stray_sender");
+        const value = toNano('0.2'); // должно быть >= 0.1 TON
         const trace = await sender.send({
-            to:       contract.address,
+            to: contract.address,
             value,
-            bounce:   true,
-            sendMode: 1,                       // pay fees separately
+            bounce: false,
+            sendMode: SendMode.PAY_GAS_SEPARATELY,
         });
 
-        /* 2. Ищем успешную транзакцию контракта */
-        const contractAddr = contract.address.toString();    // канонический вид
-        const contractTx = trace.transactions.find((tx: any) => {
-            const addrString: string | undefined =
-                // старый формат: строка в поле address
-                (typeof tx.address === 'string' ? tx.address : undefined) ||
-                // если address = Address
-                (tx.address?.toString?.())                     ||
-                // generic-tx  ─ dest в inbound-message
-                (tx.inMessage?.info?.dest?.toString?.())       ||
-                // generic-tx  ─ поле description.on
-                (tx.description?.type === 'generic'
-                    ? tx.description.on?.toString?.()
-                    : undefined);
+        // Flatten all transactions
+        const allTxs = flattenTransactions(trace);
 
-            return addrString === contractAddr && tx.success === true;
+        const contractTx = allTxs.find((tx: any) => {
+            return tx.description?.type === 'generic' && tx.description?.computePhase?.type === 'vm';
         });
-
+        
         if (!contractTx) {
-            throw new Error('Tx of contract not found in trace');
+            console.error("Транзакция с исполнением кода не найдена в trace:");
+            console.error(safeStringify(allTxs));
+            throw new Error('Contract transaction not found in trace');
         }
-
-        /* 3. Извлекаем gas (SDK ≥0.25 → totalGasUsed,  <0.25 → gasUsed) */
-        const gasUsed: number =
-              (contractTx as any).totalGasUsed   // новые версии SDK
-           ?? (contractTx as any).gasUsed        // старые версии
-           ?? 0;
-
+        
+        const gasUsed: number = Number(contractTx.description.computePhase.gasUsed ?? 0);
+        
         process.stdout.write(`💨 gasUsed = ${gasUsed}\n`);
         expect(gasUsed).toBeLessThanOrEqual(3500);
     });
+});
+
+
+
+describe("P2P – partial fund then resolve", () => {
+    let bc: Blockchain,
+        moderator: SandboxContract<TreasuryContract>,
+        seller: SandboxContract<TreasuryContract>,
+        buyer: SandboxContract<TreasuryContract>,
+        contract: SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+        seller    = await bc.treasury("seller");
+        buyer     = await bc.treasury("buyer");
+
+        const code = await compile("P2P");
+        contract   = bc.openContract(P2P.createFromConfig(moderator.address, code));
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    it("should support partial funding of a deal", async () => {
+        const DEAL_AMOUNT = toNano("5");
+        const FIRST_PAYMENT = toNano("2");
+        const SECOND_PAYMENT = toNano("1.5");
+        const FINAL_PAYMENT = toNano("1.5"); // Total = 5 TON
+
+        const memo = "partial-deal-test";
+
+        // 1. Создаём сделку
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            DEAL_AMOUNT,
+            memo
+        );
+
+        // 2. Первый частичный платеж
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            FIRST_PAYMENT
+        );
+
+        // Проверяем funded == 0 и funded_amount == FIRST_PAYMENT
+        let dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(0);
+        expect(dealInfo.fundedAmount.toString()).toBe(FIRST_PAYMENT.toString());
+
+        // Получаем полную информацию о сделке
+        let fullDealInfo = await contract.getFullDealInfo(0);
+        expect(fullDealInfo.fundedAmount.toString()).toBe(FIRST_PAYMENT.toString());
+
+        // 3. Второй частичный платеж
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            SECOND_PAYMENT
+        );
+
+        // Проверяем funded == 0 и funded_amount == FIRST_PAYMENT + SECOND_PAYMENT
+        dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(0);
+        expect(dealInfo.fundedAmount.toString()).toBe((FIRST_PAYMENT + SECOND_PAYMENT).toString());
+
+        // 4. Пытаемся разрешить сделку (ожидаем фейл, т.к. сделка не полностью профинансирована)
+        const txBefore = await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            true
+        );
+
+        expect(txBefore.transactions).toHaveTransaction({
+            success: false,
+            exitCode: 111,
+        });
+
+        // 5. Финальный платеж
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            FINAL_PAYMENT
+        );
+
+        // Проверяем funded == 1 и funded_amount == DEAL_AMOUNT
+        dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(1);
+        expect(dealInfo.fundedAmount.toString()).toBe(DEAL_AMOUNT.toString());
+
+        // 6. Проверяем баланс продавца до разрешения
+        const sellerBalanceBefore = await seller.getBalance();
+
+        // 7. Теперь можно разрешить
+        const txAfter = await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            true
+        );
+
+        expect(txAfter.transactions).toHaveTransaction({
+            success: true,
+        });
+
+        // 8. Проверяем баланс продавца после разрешения
+        const sellerBalanceAfter = await seller.getBalance();
+
+        // Продавец должен получить сумму сделки минус комиссия (3%)
+        const COMMISSION_PERCENT = 3;
+        const expectedReceived = DEAL_AMOUNT - (DEAL_AMOUNT * BigInt(COMMISSION_PERCENT) / 100n);
+
+        const delta = sellerBalanceAfter - sellerBalanceBefore;
+
+        expect(delta).toBeGreaterThanOrEqual(expectedReceived - toNano("0.03")); // допустим маленькую погрешность на fee
+
+    }, 60_000);
+});
+describe("P2P – partial fund then resolve", () => {
+    let bc: Blockchain,
+        moderator: SandboxContract<TreasuryContract>,
+        seller: SandboxContract<TreasuryContract>,
+        buyer: SandboxContract<TreasuryContract>,
+        contract: SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+        seller    = await bc.treasury("seller");
+        buyer     = await bc.treasury("buyer");
+
+        const code = await compile("P2P");
+        contract   = bc.openContract(P2P.createFromConfig(moderator.address, code));
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    it("should not allow resolve on partially funded deal", async () => {
+        const DEAL_AMOUNT = toNano("5");
+        const PARTIAL_AMOUNT = toNano("3");
+        const REMAINING_AMOUNT = DEAL_AMOUNT - PARTIAL_AMOUNT;
+
+        const memo = "partial-deal-test";
+
+        // 1. Создаём сделку
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            DEAL_AMOUNT,
+            memo
+        );
+
+        // 2. Частично финансируем
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            PARTIAL_AMOUNT
+        );
+
+        // Проверяем funded == 0
+        let dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(0);
+
+        // 3. Пытаемся разрешить сделку (ожидаем фейл)
+        const txBefore = await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            true
+        );
+
+        expect(txBefore.transactions).toHaveTransaction({
+            success: false,
+            exitCode: 111,
+        });
+
+        // 4. Дофинансируем оставшуюся сумму
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            REMAINING_AMOUNT
+        );
+
+        // Проверяем funded == 1
+        dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(1);
+
+        // 5. Проверяем баланс продавца до разрешения
+        const sellerBalanceBefore = await seller.getBalance();
+
+        // 6. Теперь можно разрешить
+        const txAfter = await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            true
+        );
+
+        expect(txAfter.transactions).toHaveTransaction({
+            success: true,
+        });
+
+        // 7. Проверяем баланс продавца после разрешения
+        const sellerBalanceAfter = await seller.getBalance();
+
+        // Продавец должен получить сумму сделки минус комиссия (3%)
+        const COMMISSION_PERCENT = 3;
+        const expectedReceived = DEAL_AMOUNT - (DEAL_AMOUNT * BigInt(COMMISSION_PERCENT) / 100n);
+
+        const delta = sellerBalanceAfter - sellerBalanceBefore;
+
+        expect(delta).toBeGreaterThanOrEqual(expectedReceived - toNano("0.03")); // допустим маленькую погрешность на fee
+
+    }, 60_000);
+
+    it("should allow moderator to refund buyer if deal is not fully funded", async () => {
+        const DEAL_AMOUNT = toNano("5");
+        const PARTIAL_AMOUNT = toNano("2");
+
+        const memo = "refund-partial-deal-test";
+
+        // 1. Создаём сделку
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            DEAL_AMOUNT,
+            memo
+        );
+
+        // 2. Частично финансируем
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            PARTIAL_AMOUNT
+        );
+
+        // Проверяем funded == 0
+        let dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(0);
+
+        // 3. Проверяем баланс покупателя до возврата
+        const buyerBalanceBefore = await buyer.getBalance();
+
+        // 4. Модератор решает отменить сделку (вернуть деньги баеру)
+        const txRefund = await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            false // false значит вернуть баеру
+        );
+
+        expect(txRefund.transactions).toHaveTransaction({
+            success: true,
+        });
+
+        // 5. Проверяем баланс покупателя после возврата
+        const buyerBalanceAfter = await buyer.getBalance();
+
+        const refundedAmount = buyerBalanceAfter - buyerBalanceBefore;
+
+        // Баер должен получить почти всё назад (за вычетом комиссии и небольшой платы за газ)
+        expect(refundedAmount).toBeGreaterThanOrEqual(PARTIAL_AMOUNT - toNano("0.05"));
+    }, 60_000);
+});
+describe("P2P – overpayment handling", () => {
+    let bc: Blockchain,
+        moderator: SandboxContract<TreasuryContract>,
+        seller: SandboxContract<TreasuryContract>,
+        buyer: SandboxContract<TreasuryContract>,
+        contract: SandboxContract<P2P>;
+
+    beforeEach(async () => {
+        bc        = await Blockchain.create();
+        moderator = await bc.treasury("moderator");
+        seller    = await bc.treasury("seller");
+        buyer     = await bc.treasury("buyer");
+
+        const code = await compile("P2P");
+        contract   = bc.openContract(P2P.createFromConfig(moderator.address, code));
+        await contract.sendDeploy(moderator.getSender(), toNano("0.05"));
+    });
+
+    it("should handle overpayment: seller gets deal amount minus commission, buyer gets overpayment back", async () => {
+        const DEAL_AMOUNT = toNano("5");
+        const OVERPAYMENT = toNano("1");
+        const TOTAL_PAYMENT = DEAL_AMOUNT + OVERPAYMENT;
+        const memo = "overpayment-test";
+    
+        // 1. Создаём сделку
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            DEAL_AMOUNT,
+            memo
+        );
+    
+        // 2. Покупатель финансирует сделку с переплатой
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            TOTAL_PAYMENT
+        );
+    
+        // Проверяем, что сделка профинансирована
+        const dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(1);
+    
+        // 3. Сохраняем баланс продавца перед разрешением
+        const sellerBalanceBefore = await seller.getBalance();
+    
+        // 4. Разрешаем сделку в пользу продавца
+        await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            true
+        );
+    
+        // 5. Проверяем баланс продавца
+        const sellerBalanceAfter = await seller.getBalance();
+        const COMMISSION_PERCENT = 3;
+        const expectedSellerReceive = DEAL_AMOUNT - (DEAL_AMOUNT * BigInt(COMMISSION_PERCENT) / 100n);
+        const sellerDelta = sellerBalanceAfter - sellerBalanceBefore;
+        expect(sellerDelta).toBeGreaterThanOrEqual(expectedSellerReceive - toNano("0.03"));
+    
+        // 6. Проверяем, что переплата осталась в unknown_funds
+        const storedOverpay = await contract.getUnknownFund(0);
+        expect(storedOverpay).toBe(OVERPAYMENT);
+    
+        // 7. Сохраняем баланс покупателя перед возвратом
+        const buyerBalanceBeforeRefund = await buyer.getBalance();
+    
+        // 8. Модератор инициирует возврат переплаты
+        await contract.sendRefundUnknown(moderator.getSender(), 0);
+    
+        // 9. Проверяем, что unknown_funds[0] очищено
+        const storedAfterRefund = await contract.getUnknownFund(0);
+        expect(storedAfterRefund).toBe(0n);
+    
+        // 10. Проверяем баланс покупателя после возврата
+        const buyerBalanceAfterRefund = await buyer.getBalance();
+        const buyerDelta = buyerBalanceAfterRefund - buyerBalanceBeforeRefund;
+    
+        // Ожидаем, что покупатель получил почти всю переплату обратно
+        const margin = toNano("0.05");
+        expect(buyerDelta).toBeGreaterThanOrEqual(OVERPAYMENT - margin);
+    }, 60_000);
+    it("should handle overpayment: deal resolved in favor of buyer, buyer gets full amount back", async () => {
+        const DEAL_AMOUNT = toNano("5");
+        const OVERPAYMENT = toNano("1");
+        const TOTAL_PAYMENT = DEAL_AMOUNT + OVERPAYMENT;
+        const memo = "overpayment-to-buyer-test";
+    
+        // 1. Создаём сделку
+        await contract.sendCreateDeal(
+            moderator.getSender(),
+            seller.address,
+            buyer.address,
+            DEAL_AMOUNT,
+            memo
+        );
+    
+        // 2. Покупатель финансирует сделку с переплатой
+        await contract.sendFundDeal(
+            buyer.getSender(),
+            memo,
+            TOTAL_PAYMENT
+        );
+    
+        // Проверяем, что сделка профинансирована
+        const dealInfo = await contract.getDealInfo(0);
+        expect(dealInfo.funded).toBe(1);
+    
+        // 3. Сохраняем баланс покупателя перед разрешением
+        const buyerBalanceBeforeResolve = await buyer.getBalance();
+    
+        // 4. Разрешаем сделку в пользу покупателя (approvePayment = false)
+        await contract.sendResolveDealExternal(
+            moderator.getSender(),
+            memo,
+            false
+        );
+    
+        // 5. Проверяем баланс покупателя после разрешения
+        const buyerBalanceAfterResolve = await buyer.getBalance();
+        const buyerDeltaAfterResolve = buyerBalanceAfterResolve - buyerBalanceBeforeResolve;
+    
+        // После разрешения покупатель должен получить сумму сделки (5 TON)
+        const margin = toNano("0.05");
+        expect(buyerDeltaAfterResolve).toBeGreaterThanOrEqual(DEAL_AMOUNT - margin);
+    
+        // 6. Проверяем, что переплата осталась в unknown_funds
+        const storedOverpay = await contract.getUnknownFund(0);
+        expect(storedOverpay).toBe(OVERPAYMENT);
+    
+        // 7. Сохраняем баланс покупателя перед возвратом переплаты
+        const buyerBalanceBeforeRefund = await buyer.getBalance();
+    
+        // 8. Модератор инициирует возврат переплаты
+        await contract.sendRefundUnknown(moderator.getSender(), 0);
+    
+        // 9. Проверяем, что unknown_funds[0] очищено
+        const storedAfterRefund = await contract.getUnknownFund(0);
+        expect(storedAfterRefund).toBe(0n);
+    
+        // 10. Проверяем баланс покупателя после возврата переплаты
+        const buyerBalanceAfterRefund = await buyer.getBalance();
+        const buyerDeltaRefund = buyerBalanceAfterRefund - buyerBalanceBeforeRefund;
+    
+        expect(buyerDeltaRefund).toBeGreaterThanOrEqual(OVERPAYMENT - margin);
+    }, 60_000);
 });
