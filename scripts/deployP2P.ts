@@ -96,7 +96,7 @@ async function deployContract() {
     });
 
     try {
-        await client.sendExternalMessage(wallet, deployTransfer);
+        await client.sendExternalMessage(walletContract, deployTransfer);
         console.log("✅ Deploy message sent.");
     } catch (err) {
         console.error("❌ Error sending deploy transaction:", err);

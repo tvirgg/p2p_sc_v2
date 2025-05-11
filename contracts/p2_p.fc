@@ -414,24 +414,28 @@ int get_commission_pool() method_id {
 (slice, slice, int, int, int) get_deal_info_by_memo(cell memo) method_id {
     var (_, dd, mm, _, _, _, _, _) = load_data();
     int mh = cell_hash(memo);
-    (slice s, int found) = mm.udict_get(256, mh);
+
+    (cell id_cell, int found) = mm.udict_get_ref?(256, mh);
     if (found == 0) {
         return (null(), null(), 0, 0, 0);
     }
-    int deal_id = s~load_uint(32);
-    (cell c, int f2) = dd.udict_get_ref?(32, deal_id);
-    if (f2 == 0) {
+
+    slice id_slice = id_cell.begin_parse();
+    int deal_id = id_slice~load_uint(32);
+
+    (cell deal_cell, int deal_found) = dd.udict_get_ref?(32, deal_id);
+    if (deal_found == 0) {
         return (null(), null(), 0, 0, 0);
     }
 
-    slice d2 = c.begin_parse();
-    slice seller = d2~load_msg_addr();
-    slice buyer = d2~load_msg_addr();
-    int amt = d2~load_coins();
-    int funded = d2~load_uint(1);
+    slice deal_slice = deal_cell.begin_parse();
+    slice seller = deal_slice~load_msg_addr();
+    slice buyer = deal_slice~load_msg_addr();
+    int amt = deal_slice~load_coins();
+    int funded = deal_slice~load_uint(1);
     int funded_amount = 0;
-    if (~ d2.slice_empty?()) {
-        funded_amount = d2~load_coins();
+    if (~ deal_slice.slice_empty?()) {
+        funded_amount = deal_slice~load_coins();
     }
 
     return (seller, buyer, amt, funded, funded_amount);
