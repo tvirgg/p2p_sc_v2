@@ -7,7 +7,7 @@
         "build": "blueprint build",
         "test": "jest --verbose",
         "use-contract": "ts-node scripts/useContract.ts",
-        "monitor-commissions": "ts-node scripts/monitorCommissions.ts",
+        "deploy": "ts-node scripts/deployP2P.ts",
         "check-commissions": "ts-node scripts/monitorCommissions.ts --check",
         "monitor": "ts-node scripts/monitorCommissions.ts --monitor"
     },
