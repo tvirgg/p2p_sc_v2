@@ -48,18 +48,23 @@ async function deployContract() {
     const codeCell = Cell.fromBoc(Buffer.from(compiled.hex, "hex"))[0];
 
     // Сборка data
-    const dealsDict = Dictionary.empty(Dictionary.Keys.Uint(32), Dictionary.Values.Cell());
-    const memoMap = Dictionary.empty(Dictionary.Keys.Uint(256), Dictionary.Values.Cell());
-    const unknownFunds = Dictionary.empty(Dictionary.Keys.Uint(32), Dictionary.Values.Cell());
+// 1. Пустые словари
+const dealsDict = Dictionary.empty(Dictionary.Keys.Uint(32), Dictionary.Values.Cell());
+const memoMap   = Dictionary.empty(Dictionary.Keys.Uint(256), Dictionary.Values.Cell());
+const unknownFunds  = Dictionary.empty(Dictionary.Keys.Uint(32), Dictionary.Values.Cell());
+const ufFreeStack   = Dictionary.empty(Dictionary.Keys.Uint(32), Dictionary.Values.Cell());
 
-    const dataCell = beginCell()
-        .storeUint(0, 32)
-        .storeDict(dealsDict)
-        .storeDict(memoMap)
-        .storeDict(unknownFunds)
-        .storeAddress(walletAddress)
-        .storeUint(0, 32)
-        .endCell();
+// 2. Формируем data‑cell согласно exact layout
+const dataCell = beginCell()
+    .storeUint(0, 32)            // deals_counter
+    .storeDict(dealsDict)        // deals_dict
+    .storeDict(memoMap)          // memo_map
+    .storeDict(unknownFunds)     // unknown_funds
+    .storeAddress(walletAddress) // moderator_address
+    .storeUint(0n, 128)          // commissions_pool (uint128!)
+    .storeUint(0, 32)            // next_uf_key
+    .storeDict(ufFreeStack)      // uf_free_stack
+    .endCell();
 
     const stateInit: StateInit = { code: codeCell, data: dataCell };
     const contractAddr = contractAddress(0, stateInit);
@@ -96,7 +101,7 @@ async function deployContract() {
     });
 
     try {
-        await client.sendExternalMessage(walletContract, deployTransfer);
+        await client.sendExternalMessage(wallet, deployTransfer);
         console.log("✅ Deploy message sent.");
     } catch (err) {
         console.error("❌ Error sending deploy transaction:", err);

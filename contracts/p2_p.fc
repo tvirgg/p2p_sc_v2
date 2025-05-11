@@ -11,6 +11,7 @@ const int MIN_CREATE_FEE = 3000000;
 const int MIN_CP_FOR_ADMIN = 3000000;
 const int CP_RESERVE_GAS = 500000000;
 const int UF_MAX_RECORDS = 10000;
+const int UF_REC_TESTNET = 10000;
 
 int equal_slice_bits(slice a, slice b) asm "SDEQ";
 
@@ -411,24 +412,33 @@ int get_commission_pool() method_id {
     return cp;
 }
 
-(slice, slice, int, int, int) get_deal_info_by_memo(cell memo) method_id {
+(slice, slice, int, int, int) get_deal_info_by_memo(slice memo_content_slice) method_id {
     var (_, dd, mm, _, _, _, _, _) = load_data();
-    int mh = cell_hash(memo);
 
-    (cell id_cell, int found) = mm.udict_get_ref?(256, mh);
-    if (found == 0) {
+    ;; `memo_content_slice` - это результат .beginParse() ячейки,
+    ;; созданной в TS как beginCell().storeStringTail(memo_string).endCell().
+    ;; Воссоздаем оригинальную ячейку для корректного хеширования.
+    cell memo_cell_for_hashing = begin_cell().store_slice(memo_content_slice).end_cell();
+    int mh = cell_hash(memo_cell_for_hashing);
+
+    ;; Запрашиваем slice из memo_map, так как сохраняли slice с помощью udict_set
+    (slice id_value_as_slice, int found_in_memo_map) = mm.udict_get?(256, mh); ;; <--- ИЗМЕНЕНИЕ ЗДЕСЬ
+    
+    if (found_in_memo_map == 0) {
         return (null(), null(), 0, 0, 0);
     }
 
-    slice id_slice = id_cell.begin_parse();
-    int deal_id = id_slice~load_uint(32);
+    ;; id_value_as_slice уже является нужным slice, не нужно делать .begin_parse()
+    ;; Он содержит uint(32) - ID сделки.
+    int deal_id = id_value_as_slice~load_uint(32); ;; <--- ИЗМЕНЕНИЕ ЗДЕСЬ
 
-    (cell deal_cell, int deal_found) = dd.udict_get_ref?(32, deal_id);
-    if (deal_found == 0) {
+    (cell deal_data_cell, int deal_found_in_deals_dict) = dd.udict_get_ref?(32, deal_id);
+    if (deal_found_in_deals_dict == 0) {
+        ;; Сделка была удалена (например, после resolve_deal) или другая ошибка консистентности
         return (null(), null(), 0, 0, 0);
     }
 
-    slice deal_slice = deal_cell.begin_parse();
+    slice deal_slice = deal_data_cell.begin_parse();
     slice seller = deal_slice~load_msg_addr();
     slice buyer = deal_slice~load_msg_addr();
     int amt = deal_slice~load_coins();
