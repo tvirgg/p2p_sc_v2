@@ -410,3 +410,29 @@ int get_commission_pool() method_id {
     var (_, _, _, _, _, cp, _, _) = load_data();
     return cp;
 }
+
+(slice, slice, int, int, int) get_deal_info_by_memo(cell memo) method_id {
+    var (_, dd, mm, _, _, _, _, _) = load_data();
+    int mh = cell_hash(memo);
+    (slice s, int found) = mm.udict_get(256, mh);
+    if (found == 0) {
+        return (null(), null(), 0, 0, 0);
+    }
+    int deal_id = s~load_uint(32);
+    (cell c, int f2) = dd.udict_get_ref?(32, deal_id);
+    if (f2 == 0) {
+        return (null(), null(), 0, 0, 0);
+    }
+
+    slice d2 = c.begin_parse();
+    slice seller = d2~load_msg_addr();
+    slice buyer = d2~load_msg_addr();
+    int amt = d2~load_coins();
+    int funded = d2~load_uint(1);
+    int funded_amount = 0;
+    if (~ d2.slice_empty?()) {
+        funded_amount = d2~load_coins();
+    }
+
+    return (seller, buyer, amt, funded, funded_amount);
+}
