@@ -257,9 +257,6 @@ if (op == op_fund_deal) {
             send_transfer(b, funded_amount);
         }
 
-        dd~udict_delete?(32, id);
-        mm~udict_delete?(256, mh);
-
         save_data(dc, dd, mm, uf, ma, cp, next_uf_key, uf_free_stack);
         return ();
     }
