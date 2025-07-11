@@ -9,7 +9,9 @@
         "use-contract": "ts-node scripts/useContract.ts",
         "monitor-commissions": "ts-node scripts/monitorCommissions.ts",
         "check-commissions": "ts-node scripts/monitorCommissions.ts --check",
-        "monitor": "ts-node scripts/monitorCommissions.ts --monitor"
+        "monitor": "ts-node scripts/monitorCommissions.ts --monitor",
+        "api": "ts-node-dev --respawn src/server.ts",
+        "start-api": "node start_api_server.js"
     },
     "devDependencies": {
         "@tact-lang/compiler": "^1.6.5",
@@ -23,20 +25,30 @@
         "@ton/tolk-js": "^0.10.0",
         "@ton/ton": "^15.2.1",
         "@types/chai": "^5.2.1",
+        "@types/cors": "^2.8.17",
+        "@types/express": "^5.0.1",
         "@types/jest": "^29.5.14",
+        "@types/morgan": "^1.9.9",
         "@types/node": "^22.14.0",
         "jest": "^29.7.0",
         "prettier": "^3.5.3",
         "ton-contract-executor": "^0.8.4",
         "ts-jest": "^29.3.1",
         "ts-node": "^10.9.2",
+        "ts-node-dev": "^2.0.0",
         "typescript": "^5.8.3"
     },
     "dependencies": {
+        "@orbs-network/ton-access": "^2.3.3",
         "@ton-community/blueprint": "^0.6.4",
         "@ton-community/sandbox": "^0.11.0",
         "@ton/core": "^0.0.60",
+        "axios": "^1.6.7",
         "chai": "^5.2.0",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.5",
+        "express": "^4.21.2",
+        "morgan": "^1.10.0",
         "tonweb": "^0.0.66"
     }
 }

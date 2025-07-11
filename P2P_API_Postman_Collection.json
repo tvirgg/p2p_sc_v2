@@ -1,0 +1,227 @@
+{
+  "info": {
+    "name": "P2P Smart Contract API",
+    "description": "A collection of requests for interacting with the P2P Smart Contract API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "GET Endpoints",
+      "item": [
+        {
+          "name": "Get Deal Information",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/deal/0",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "deal",
+                "0"
+              ]
+            },
+            "description": "Retrieves information about a specific deal by its ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Deal Counter",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/deal-counter",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "deal-counter"
+              ]
+            },
+            "description": "Retrieves the current deal counter (total number of deals created)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Moderator Address",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/moderator",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "moderator"
+              ]
+            },
+            "description": "Retrieves the address of the moderator."
+          },
+          "response": []
+        }
+      ],
+      "description": "GET endpoints for retrieving information from the P2P Smart Contract."
+    },
+    {
+      "name": "POST Endpoints",
+      "item": [
+        {
+          "name": "Create Deal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seller\": \"0:3815535e02b7fb7f06f84fce6ec68f5a3a9b6428d261d899cc875c0cd77e6182\",\n  \"buyer\": \"0:61f48c6226232ad3d5da8fcb96a29a1175dad31996b55fee7e701a6b626e3bb0\",\n  \"amount\": \"1000000000\",\n  \"memo\": \"Payment for services\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/deal",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "deal"
+              ]
+            },
+            "description": "Creates a new deal between a seller and a buyer."
+          },
+          "response": []
+        },
+        {
+          "name": "Fund Deal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"memo\": \"Payment for services\",\n  \"value\": \"1000000000\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/fund",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "fund"
+              ]
+            },
+            "description": "Funds an existing deal. The memo must match the one used when creating the deal."
+          },
+          "response": []
+        },
+        {
+          "name": "Resolve Deal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"memo\": \"Payment for services\",\n  \"verdict\": true\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/resolve",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "resolve"
+              ]
+            },
+            "description": "Resolves a deal, either approving payment to the seller or refunding the buyer. Set verdict to true to approve payment to seller, or false to refund the buyer."
+          },
+          "response": []
+        },
+        {
+          "name": "Refund Unknown Funds",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"1\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/refund-unknown",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "refund-unknown"
+              ]
+            },
+            "description": "Refunds unknown funds that were sent to the contract."
+          },
+          "response": []
+        },
+        {
+          "name": "Withdraw Commissions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/withdraw",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "withdraw"
+              ]
+            },
+            "description": "Withdraws accumulated commissions to the moderator's wallet."
+          },
+          "response": []
+        }
+      ],
+      "description": "POST endpoints for interacting with the P2P Smart Contract."
+    }
+  ]
+}
